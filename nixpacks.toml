@@ -1,0 +1,8 @@
+[phases.install]
+cmds = ["uv sync --no-dev --no-install-project"]
+
+[phases.build]
+cmds = ["uv sync --no-dev --no-editable"]
+
+[start]
+cmd = "uv run ticktick-mcp"
