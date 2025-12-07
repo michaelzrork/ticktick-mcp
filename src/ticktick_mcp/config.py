@@ -93,10 +93,18 @@ if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
 # Use /tmp for cloud deployment (writable), otherwise use config dir for local
 oauth_token_env = os.getenv("TICKTICK_OAUTH_TOKEN")
 if oauth_token_env:
-    # Environment variables set (cloud deployment)
+    # Cloud deployment - write token to /tmp cache
     dotenv_dir_path = Path("/tmp")
     token_path = dotenv_dir_path / ".token-oauth"
-    token_path.write_text(oauth_token_env)
+    
+    # Parse token and add expire_time field
+    token_data = json.loads(oauth_token_env)
+    import time
+    current_time = int(time.time())
+    token_data['expire_time'] = current_time + token_data.get('expires_in', 15551999)
+    
+    # Write corrected token to cache
+    token_path.write_text(json.dumps(token_data))
 else:
     # Set dotenv_dir_path for token cache
     dotenv_dir_path = Path(args.dotenv_dir).expanduser()
