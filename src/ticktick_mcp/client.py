@@ -1,4 +1,6 @@
 import logging
+import os
+import json
 from typing import Optional
 
 # TickTick library imports
@@ -38,17 +40,39 @@ class TickTickClientSingleton:
             return
 
         try:
-            logging.info(f"Initializing OAuth2 with cache path: {dotenv_dir_path / '.token-oauth'}")
-            auth_client = OAuth2(
-                client_id=CLIENT_ID,
-                client_secret=CLIENT_SECRET,
-                redirect_uri=REDIRECT_URI,
-                cache_path=dotenv_dir_path / ".token-oauth" # Use path from config
-            )
-            auth_client.get_access_token() # Might trigger interactive OAuth flow
+            # Check if OAuth token is provided via environment variable (cloud deployment)
+            oauth_token_env = os.getenv("TICKTICK_OAUTH_TOKEN")
+            
+            if oauth_token_env:
+                logging.info("Using OAuth token from environment variable")
+                # Parse the token JSON from environment variable
+                token_data = json.loads(oauth_token_env)
+                
+                # Create OAuth2 client with the token
+                auth_client = OAuth2(
+                    client_id=CLIENT_ID,
+                    client_secret=CLIENT_SECRET,
+                    redirect_uri=REDIRECT_URI,
+                    cache_path=dotenv_dir_path / ".token-oauth"
+                )
+                # Set the token directly instead of triggering OAuth flow
+                auth_client.token = token_data
+                
+                logging.info(f"Initializing TickTickClient with username: {USERNAME}")
+                client = TickTickClient(USERNAME, PASSWORD, auth_client)
+            else:
+                # Local development - use interactive OAuth flow
+                logging.info(f"Initializing OAuth2 with cache path: {dotenv_dir_path / '.token-oauth'}")
+                auth_client = OAuth2(
+                    client_id=CLIENT_ID,
+                    client_secret=CLIENT_SECRET,
+                    redirect_uri=REDIRECT_URI,
+                    cache_path=dotenv_dir_path / ".token-oauth" # Use path from config
+                )
+                auth_client.get_access_token() # Might trigger interactive OAuth flow
 
-            logging.info(f"Initializing TickTickClient with username: {USERNAME}")
-            client = TickTickClient(USERNAME, PASSWORD, auth_client)
+                logging.info(f"Initializing TickTickClient with username: {USERNAME}")
+                client = TickTickClient(USERNAME, PASSWORD, auth_client)
             logging.info(f"TickTick client initialized successfully within singleton.")
             TickTickClientSingleton._instance = client
         except Exception as e:
