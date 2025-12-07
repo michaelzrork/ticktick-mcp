@@ -602,6 +602,7 @@ async def ticktick_pin_task(task_id: str) -> str:
           Then: {"task_id": "[found task ID]"}
     """
     try:
+        import requests
         client = TickTickClientSingleton.get_client()
 
         task_obj = client.get_by_id(task_id)
@@ -611,10 +612,34 @@ async def ticktick_pin_task(task_id: str) -> str:
         # Set pinnedTime to current UTC time
         current_time = datetime.datetime.now(datetime.timezone.utc)
         task_obj['pinnedTime'] = current_time.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + '+0000'
-
-        pinned_task = client.task.update(task_obj)
-        logging.info(f"Successfully pinned task ID: {task_id}")
-        return format_response(pinned_task)
+        
+        # Use the batch endpoint (required for pinning)
+        batch_payload = {
+            "add": [],
+            "update": [task_obj],
+            "delete": [],
+            "addAttachments": [],
+            "updateAttachments": [],
+            "deleteAttachments": []
+        }
+        
+        # Make raw API call to batch endpoint
+        response = requests.post(
+            "https://api.ticktick.com/api/v2/batch/task",
+            json=batch_payload,
+            cookies=client.cookies
+        )
+        
+        if response.status_code == 200:
+            logging.info(f"Successfully pinned task ID: {task_id}")
+            # Return the updated task from the response
+            result = response.json()
+            if result.get('update') and len(result['update']) > 0:
+                return format_response(result['update'][0])
+            return format_response(task_obj)
+        else:
+            return format_response({"error": f"Failed to pin task. Status: {response.status_code}, Response: {response.text}"})
+            
     except Exception as e:
         logging.error(f"Failed to pin task {task_id}: {e}", exc_info=True)
         return format_response({"error": f"Failed to pin task {task_id}: {e}"})
@@ -655,19 +680,43 @@ async def ticktick_unpin_task(task_id: str) -> str:
           Then: {"task_id": "[found task ID]"}
     """
     try:
+        import requests
         client = TickTickClientSingleton.get_client()
 
         task_obj = client.get_by_id(task_id)
         if not task_obj or not isinstance(task_obj, dict) or not task_obj.get('projectId'):
             return format_response({"error": f"Task with ID {task_id} not found or invalid.", "status": "not_found"})
 
-        # Remove pinnedTime field if it exists
-        if 'pinnedTime' in task_obj:
-            del task_obj['pinnedTime']
-
-        unpinned_task = client.task.update(task_obj)
-        logging.info(f"Successfully unpinned task ID: {task_id}")
-        return format_response(unpinned_task)
+        # Set pinnedTime to "-1" to unpin (TickTick's magic value)
+        task_obj['pinnedTime'] = "-1"
+        
+        # Use the batch endpoint (required for unpinning)
+        batch_payload = {
+            "add": [],
+            "update": [task_obj],
+            "delete": [],
+            "addAttachments": [],
+            "updateAttachments": [],
+            "deleteAttachments": []
+        }
+        
+        # Make raw API call to batch endpoint
+        response = requests.post(
+            "https://api.ticktick.com/api/v2/batch/task",
+            json=batch_payload,
+            cookies=client.cookies
+        )
+        
+        if response.status_code == 200:
+            logging.info(f"Successfully unpinned task ID: {task_id}")
+            # Return the updated task from the response
+            result = response.json()
+            if result.get('update') and len(result['update']) > 0:
+                return format_response(result['update'][0])
+            return format_response(task_obj)
+        else:
+            return format_response({"error": f"Failed to unpin task. Status: {response.status_code}, Response: {response.text}"})
+            
     except Exception as e:
         logging.error(f"Failed to unpin task {task_id}: {e}", exc_info=True)
         return format_response({"error": f"Failed to unpin task {task_id}: {e}"})
