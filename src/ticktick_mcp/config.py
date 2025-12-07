@@ -28,45 +28,62 @@ parser.add_argument(
 # intending to parse args immediately.
 args = parser.parse_args()
 
-# Determine the target directory for the .env file
-dotenv_dir_path = Path(args.dotenv_dir).expanduser() # Expand ~ to home directory
-
-# Create the directory if it doesn't exist
-try:
-    dotenv_dir_path.mkdir(parents=True, exist_ok=True)
-    logging.info(f"Ensured directory exists: {dotenv_dir_path}")
-except OSError as e:
-    logging.error(f"Error creating directory {dotenv_dir_path}: {e}")
-    sys.exit(1)
-
-# Construct the full path to the .env file
-dotenv_path = dotenv_dir_path / ".env"
-
-# Check if the .env file exists in the target directory
-if not dotenv_path.is_file():
-    logging.error(f"Required .env file not found at {dotenv_path}")
-    logging.error("Please create the .env file with your TickTick credentials.")
-    logging.error("Expected content:")
-    logging.error("  TICKTICK_CLIENT_ID=your_client_id")
-    logging.error("  TICKTICK_CLIENT_SECRET=your_client_secret")
-    logging.error("  TICKTICK_REDIRECT_URI=your_redirect_uri")
-    logging.error("  TICKTICK_USERNAME=your_ticktick_email")
-    logging.error("  TICKTICK_PASSWORD=your_ticktick_password")
-    sys.exit(1) # Exit if .env file is missing
-
-# Load the required .env file
-loaded = load_dotenv(override=True, dotenv_path=dotenv_path)
-if loaded:
-    logging.info(f"Successfully loaded environment variables from: {dotenv_path}")
-else:
-    # This case might indicate an issue reading the file even if it exists
-    logging.error(f"Failed to load environment variables from {dotenv_path}. Check file permissions and format.")
-    sys.exit(1)
-
-# --- Environment Variable Loading --- #
-# Load variables after dotenv has potentially populated them
+# Check if environment variables are already set (e.g., by Railway)
 CLIENT_ID = os.getenv("TICKTICK_CLIENT_ID")
 CLIENT_SECRET = os.getenv("TICKTICK_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("TICKTICK_REDIRECT_URI")
 USERNAME = os.getenv("TICKTICK_USERNAME")
-PASSWORD = os.getenv("TICKTICK_PASSWORD") 
+PASSWORD = os.getenv("TICKTICK_PASSWORD")
+
+# If environment variables are NOT already set, try to load from .env file
+if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
+    logging.info("Environment variables not fully set, attempting to load from .env file...")
+
+    # Determine the target directory for the .env file
+    dotenv_dir_path = Path(args.dotenv_dir).expanduser() # Expand ~ to home directory
+
+    # Create the directory if it doesn't exist
+    try:
+        dotenv_dir_path.mkdir(parents=True, exist_ok=True)
+        logging.info(f"Ensured directory exists: {dotenv_dir_path}")
+    except OSError as e:
+        logging.error(f"Error creating directory {dotenv_dir_path}: {e}")
+        sys.exit(1)
+
+    # Construct the full path to the .env file
+    dotenv_path = dotenv_dir_path / ".env"
+
+    # Check if the .env file exists in the target directory
+    if not dotenv_path.is_file():
+        logging.error(f"Required .env file not found at {dotenv_path}")
+        logging.error("Please create the .env file with your TickTick credentials.")
+        logging.error("Expected content:")
+        logging.error("  TICKTICK_CLIENT_ID=your_client_id")
+        logging.error("  TICKTICK_CLIENT_SECRET=your_client_secret")
+        logging.error("  TICKTICK_REDIRECT_URI=your_redirect_uri")
+        logging.error("  TICKTICK_USERNAME=your_ticktick_email")
+        logging.error("  TICKTICK_PASSWORD=your_ticktick_password")
+        sys.exit(1) # Exit if .env file is missing
+
+    # Load the required .env file
+    loaded = load_dotenv(override=True, dotenv_path=dotenv_path)
+    if loaded:
+        logging.info(f"Successfully loaded environment variables from: {dotenv_path}")
+    else:
+        # This case might indicate an issue reading the file even if it exists
+        logging.error(f"Failed to load environment variables from {dotenv_path}. Check file permissions and format.")
+        sys.exit(1)
+
+    # Reload variables after dotenv
+    CLIENT_ID = os.getenv("TICKTICK_CLIENT_ID")
+    CLIENT_SECRET = os.getenv("TICKTICK_CLIENT_SECRET")
+    REDIRECT_URI = os.getenv("TICKTICK_REDIRECT_URI")
+    USERNAME = os.getenv("TICKTICK_USERNAME")
+    PASSWORD = os.getenv("TICKTICK_PASSWORD")
+else:
+    logging.info("Using environment variables provided by hosting platform")
+
+# Final validation
+if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
+    logging.error("Missing required environment variables even after attempting to load .env")
+    sys.exit(1)
