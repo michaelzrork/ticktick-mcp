@@ -608,10 +608,9 @@ async def ticktick_pin_task(task_id: str) -> str:
         if not task_obj or not isinstance(task_obj, dict) or not task_obj.get('projectId'):
             return format_response({"error": f"Task with ID {task_id} not found or invalid.", "status": "not_found"})
 
-        # Set pinnedTime to current UTC time in TickTick format
-        from ticktick.helpers.time_methods import convert_date_to_tick_tick_format
+        # Set pinnedTime to current UTC time
         current_time = datetime.datetime.now(datetime.timezone.utc)
-        task_obj['pinnedTime'] = convert_date_to_tick_tick_format(current_time, task_obj.get('timeZone', 'UTC'))
+        task_obj['pinnedTime'] = current_time.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + '+0000'
 
         pinned_task = client.task.update(task_obj)
         logging.info(f"Successfully pinned task ID: {task_id}")
