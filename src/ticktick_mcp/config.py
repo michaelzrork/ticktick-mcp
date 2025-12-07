@@ -87,3 +87,6 @@ else:
 if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
     logging.error("Missing required environment variables even after attempting to load .env")
     sys.exit(1)
+    
+# Set dotenv_dir_path for token cache (used even when env vars come from platform)
+dotenv_dir_path = Path(args.dotenv_dir).expanduser()
