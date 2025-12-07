@@ -52,7 +52,8 @@ class TickTickClientSingleton:
                 auth_client = OAuth2(
                     client_id=CLIENT_ID,
                     client_secret=CLIENT_SECRET,
-                    redirect_uri=REDIRECT_URI
+                    redirect_uri=REDIRECT_URI,
+                    check_cache=False
                 )
                 # Set the token directly instead of triggering OAuth flow
                 auth_client.token = token_data
