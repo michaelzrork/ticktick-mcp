@@ -218,6 +218,16 @@ async def ticktick_create_task(
             sortOrder=sortOrder,
             items=items
         )
+        
+        # BUGFIX: builder() may not include all fields - manually ensure they're in the dict
+        if due_dt and 'dueDate' not in task_dict:
+            from ticktick.helpers.time_methods import convert_date_to_tick_tick_format
+            task_dict['dueDate'] = convert_date_to_tick_tick_format(due_dt, timeZone or client.time_zone)
+        
+        if reminders and 'reminders' not in task_dict:
+            task_dict['reminders'] = reminders
+        
+        logging.info(f"Task dict before create: {task_dict}")  # Debug logging
         created_task = client.task.create(task_dict)
         logging.info(f"Successfully created task: {created_task.get('id')}")
         return format_response(created_task)
