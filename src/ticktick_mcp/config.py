@@ -88,6 +88,15 @@ else:
 if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
     logging.error("Missing required environment variables even after attempting to load .env")
     sys.exit(1)
-    
-# Set dotenv_dir_path for token cache (used even when env vars come from platform)
-dotenv_dir_path = Path(args.dotenv_dir).expanduser()
+
+# Set dotenv_dir_path for token cache
+# Use /tmp for cloud deployment (writable), otherwise use config dir for local
+oauth_token_env = os.getenv("TICKTICK_OAUTH_TOKEN")
+if oauth_token_env:
+    # Environment variables set (cloud deployment)
+    dotenv_dir_path = Path("/tmp")
+    token_path = dotenv_dir_path / ".token-oauth"
+    token_path.write_text(oauth_token_env)
+else:
+    # Set dotenv_dir_path for token cache
+    dotenv_dir_path = Path(args.dotenv_dir).expanduser()
