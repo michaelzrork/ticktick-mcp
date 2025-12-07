@@ -34,6 +34,7 @@ CLIENT_SECRET = os.getenv("TICKTICK_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("TICKTICK_REDIRECT_URI")
 USERNAME = os.getenv("TICKTICK_USERNAME")
 PASSWORD = os.getenv("TICKTICK_PASSWORD")
+REDIRECT_URI = os.getenv("TICKTICK_REDIRECT_URI")
 
 # If environment variables are NOT already set, try to load from .env file
 if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
