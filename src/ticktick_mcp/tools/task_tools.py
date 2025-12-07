@@ -217,8 +217,7 @@ async def ticktick_create_task(
             repeat=repeat,
             priority=priority,
             sortOrder=sortOrder,
-            items=items,
-            tags=tags
+            items=items
         )
         
         # BUGFIX: builder() may not include all fields - manually ensure they're in the dict
