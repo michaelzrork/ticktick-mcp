@@ -109,6 +109,7 @@ async def ticktick_create_task(
     priority: Optional[int] = None,
     sortOrder: Optional[int] = None,
     items: Optional[List[Dict]] = None,
+    tags: Optional[List[str]] = None,
 ) -> str:
     """
     Creates a new task in TickTick.
@@ -216,7 +217,8 @@ async def ticktick_create_task(
             repeat=repeat,
             priority=priority,
             sortOrder=sortOrder,
-            items=items
+            items=items,
+            tags=tags
         )
         
         # BUGFIX: builder() may not include all fields - manually ensure they're in the dict
@@ -224,8 +226,14 @@ async def ticktick_create_task(
             from ticktick.helpers.time_methods import convert_date_to_tick_tick_format
             task_dict['dueDate'] = convert_date_to_tick_tick_format(due_dt, timeZone or client.time_zone)
         
+        if allDay and 'isAllDay' not in task_dict:
+            task_dict['isAllDay'] = True
+        
         if reminders and 'reminders' not in task_dict:
             task_dict['reminders'] = reminders
+        
+        if tags and 'tags' not in task_dict:
+            task_dict['tags'] = tags
         
         logging.info(f"Task dict before create: {task_dict}")  # Debug logging
         created_task = client.task.create(task_dict)
@@ -319,10 +327,21 @@ async def update_task(
 
     try:
         client = TickTickClientSingleton.get_client()
-        task_obj = client.get_by_id(task_id)
-        task_obj.update(task_object)
-
-        updated_task = client.task.update(task_object.model_dump(mode='json'))
+        
+        # BUGFIX: Fetch existing task and merge updates to preserve all fields
+        existing_task = client.get_by_id(task_id)
+        if not existing_task or not isinstance(existing_task, dict):
+            return format_response({"error": f"Task with ID {task_id} not found.", "status": "not_found"})
+        
+        # Convert Pydantic model to dict, excluding None values
+        updates = task_object.model_dump(mode='json', exclude_none=True)
+        
+        # Merge updates into existing task (preserves fields not being updated)
+        for key, value in updates.items():
+            existing_task[key] = value
+        
+        # Send the complete, merged task dict to the API
+        updated_task = client.task.update(existing_task)
         logging.info(f"Successfully updated task ID: {task_id}")
         return format_response(updated_task)
     except Exception as e:
@@ -547,6 +566,113 @@ async def ticktick_complete_task(task_id: str) -> str:
     except Exception as e:
         logging.error(f"Failed to complete task {task_id}: {e}", exc_info=True)
         return format_response({"error": f"Failed to complete task {task_id}: {e}"})
+
+@mcp.tool()
+@require_ticktick_client
+async def ticktick_pin_task(task_id: str) -> str:
+    """
+    Pins a task to keep it at the top of the list.
+
+    Args:
+        task_id (str): The ID string of the task to pin. Required.
+                      Must be a valid TickTick task ID.
+
+    Returns:
+        A JSON string with one of the following structures:
+        - Success: The task object with pinnedTime set
+        - Not Found: {"error": "Task with ID {task_id} not found or invalid.", "status": "not_found"}
+        - Error: {"error": "Error message describing what went wrong"}
+
+    Limitations:
+        - Only works for tasks, not projects or tags
+        - Pinned tasks appear at the top of their project/list
+        - Multiple tasks can be pinned (sorted by pinnedTime)
+
+    Examples:
+        Pin a task:
+        {
+            "task_id": "task_to_pin_123"
+        }
+
+    Agent Usage Guide:
+        - Use this tool when users say "pin task X" or "keep task X at the top"
+        - First find the task ID using ticktick_filter_tasks or other search methods
+        - Example mapping:
+          "Pin my important meeting task" →
+          First find the task ID
+          Then: {"task_id": "[found task ID]"}
+    """
+    try:
+        client = TickTickClientSingleton.get_client()
+
+        task_obj = client.get_by_id(task_id)
+        if not task_obj or not isinstance(task_obj, dict) or not task_obj.get('projectId'):
+            return format_response({"error": f"Task with ID {task_id} not found or invalid.", "status": "not_found"})
+
+        # Set pinnedTime to current UTC time in TickTick format
+        from ticktick.helpers.time_methods import convert_date_to_tick_tick_format
+        current_time = datetime.datetime.now(datetime.timezone.utc)
+        task_obj['pinnedTime'] = convert_date_to_tick_tick_format(current_time, task_obj.get('timeZone', 'UTC'))
+
+        pinned_task = client.task.update(task_obj)
+        logging.info(f"Successfully pinned task ID: {task_id}")
+        return format_response(pinned_task)
+    except Exception as e:
+        logging.error(f"Failed to pin task {task_id}: {e}", exc_info=True)
+        return format_response({"error": f"Failed to pin task {task_id}: {e}"})
+
+
+@mcp.tool()
+@require_ticktick_client
+async def ticktick_unpin_task(task_id: str) -> str:
+    """
+    Unpins a task, allowing it to sort normally in the list.
+
+    Args:
+        task_id (str): The ID string of the task to unpin. Required.
+                      Must be a valid TickTick task ID.
+
+    Returns:
+        A JSON string with one of the following structures:
+        - Success: The task object with pinnedTime removed
+        - Not Found: {"error": "Task with ID {task_id} not found or invalid.", "status": "not_found"}
+        - Error: {"error": "Error message describing what went wrong"}
+
+    Limitations:
+        - Only works for tasks, not projects or tags
+        - Unpinned tasks return to normal sort order
+
+    Examples:
+        Unpin a task:
+        {
+            "task_id": "task_to_unpin_123"
+        }
+
+    Agent Usage Guide:
+        - Use this tool when users say "unpin task X" or "remove pin from task X"
+        - First find the task ID using ticktick_filter_tasks or other search methods
+        - Example mapping:
+          "Unpin my meeting task" →
+          First find the task ID
+          Then: {"task_id": "[found task ID]"}
+    """
+    try:
+        client = TickTickClientSingleton.get_client()
+
+        task_obj = client.get_by_id(task_id)
+        if not task_obj or not isinstance(task_obj, dict) or not task_obj.get('projectId'):
+            return format_response({"error": f"Task with ID {task_id} not found or invalid.", "status": "not_found"})
+
+        # Remove pinnedTime field if it exists
+        if 'pinnedTime' in task_obj:
+            del task_obj['pinnedTime']
+
+        unpinned_task = client.task.update(task_obj)
+        logging.info(f"Successfully unpinned task ID: {task_id}")
+        return format_response(unpinned_task)
+    except Exception as e:
+        logging.error(f"Failed to unpin task {task_id}: {e}", exc_info=True)
+        return format_response({"error": f"Failed to unpin task {task_id}: {e}"})
 
 @mcp.tool()
 @require_ticktick_client
