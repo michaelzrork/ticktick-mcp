@@ -624,10 +624,9 @@ async def ticktick_pin_task(task_id: str) -> str:
         }
         
         # Make raw API call to batch endpoint
-        response = requests.post(
+        response = client.http.post(
             "https://api.ticktick.com/api/v2/batch/task",
-            json=batch_payload,
-            cookies=client.cookies
+            json=batch_payload
         )
         
         if response.status_code == 200:
@@ -701,10 +700,9 @@ async def ticktick_unpin_task(task_id: str) -> str:
         }
         
         # Make raw API call to batch endpoint
-        response = requests.post(
+        response = client.http.post(
             "https://api.ticktick.com/api/v2/batch/task",
-            json=batch_payload,
-            cookies=client.cookies
+            json=batch_payload
         )
         
         if response.status_code == 200:
