@@ -332,8 +332,8 @@ async def update_task(
         if not existing_task or not isinstance(existing_task, dict):
             return format_response({"error": f"Task with ID {task_id} not found.", "status": "not_found"})
         
-        # Convert Pydantic model to dict, excluding None values
-        updates = task_object.model_dump(mode='json', exclude_none=True)
+        # Convert Pydantic model to dict, excluding unset values
+        updates = task_object.model_dump(exclude_unset=True)
         
         # Merge updates into existing task (preserves fields not being updated)
         for key, value in updates.items():
