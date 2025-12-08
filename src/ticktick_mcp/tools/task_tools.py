@@ -612,33 +612,30 @@ async def ticktick_pin_task(task_id: str) -> str:
         current_time = datetime.datetime.now(datetime.timezone.utc)
         task_obj['pinnedTime'] = current_time.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + '+0000'
         
-        # Use the batch endpoint (required for pinning)
-        batch_payload = {
-            "add": [],
-            "update": [task_obj],
-            "delete": [],
-            "addAttachments": [],
-            "updateAttachments": [],
-            "deleteAttachments": []
+        # Try using the official OpenAPI update endpoint
+        url = f"{client.OPEN_API_BASE_URL}/open/v1/task/{task_id}"
+        
+        # Use access token for auth (Bearer token)
+        headers = {
+            'Authorization': f'Bearer {client.access_token}',
+            'Content-Type': 'application/json'
         }
         
-        # Use client's private _session directly to bypass status code check
         response = client._session.post(
-            "https://api.ticktick.com/api/v2/batch/task",
-            json=batch_payload
+            url,
+            json=task_obj,
+            headers=headers
         )
         
-        logging.info(f"Batch API response status: {response.status_code}")
-        logging.info(f"Batch API response text: {response.text}")
+        logging.info(f"OpenAPI update response status: {response.status_code}")
+        logging.info(f"OpenAPI update response text: {response.text[:500]}")
         
         if response.status_code == 200:
             logging.info(f"Successfully pinned task ID: {task_id}")
             result = response.json()
-            if result.get('update') and len(result['update']) > 0:
-                return format_response(result['update'][0])
-            return format_response(task_obj)
+            return format_response(result)
         else:
-            return format_response({"error": f"Failed to pin task. Status: {response.status_code}, Response: {response.text}"})
+            return format_response({"error": f"Failed to pin task. Status: {response.status_code}, Response: {response.text[:500]}"})
             
     except Exception as e:
         logging.error(f"Failed to pin task {task_id}: {e}", exc_info=True)
