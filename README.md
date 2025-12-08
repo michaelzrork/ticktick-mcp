@@ -21,13 +21,22 @@ This server provides comprehensive access to TickTick functionalities via MCP to
   *  Get tasks by ID or specific fields.
   *  Get completed tasks within a date range.
   *  Get tasks from a specific project.
-  *  Filter tasks based on various critggeria (priority, project, tags, etc.).
+  *  Filter tasks based on various criteria (priority, project, tags, etc.).
 *  **Project/Tag Management:** Retrieve all projects, tags, and project folders.
 *  **Helper Tools:** Convert datetime strings to the required TickTick format.
 
 Refer to the tool definitions within the `src/ticktick_mcp/tools/` directory for detailed specifications.
 
-## 🚀 Getting Started
+## 📋 Table of Contents
+
+- [Local Installation](#🖥️-local-installation)
+- [Cloud Deployment](#☁️-cloud-deployment)
+- [Tools](#🔧-tools)
+- [Sample Agent Prompt](#🤖-sample-agent-prompt)
+- [Contributing](#🤝-contributing)
+- [License](#📜-license)
+
+## 🖥️ Local Installation
 
 This server utilizes the unofficial [`ticktick-py` library](https://lazeroffmichael.github.io/ticktick-py/) to interact with the TickTick API.
 
@@ -93,6 +102,89 @@ Configure your MCP client (like Claude Desktop, VS Code Agent Mode, etc.) to use
  }
 }
 ```
+
+## ☁️ Cloud Deployment
+
+Deploy this MCP server to cloud platforms like Railway, Render, or Fly.io for 24/7 availability and integration with claude.ai.
+
+### Prerequisites
+
+* A TickTick account
+* A cloud platform account (Railway, Render, or Fly.io)
+* Your TickTick API credentials (Client ID and Client Secret)
+
+### Setup
+
+#### 1. Register a TickTick Application for Cloud
+
+**Important:** Cloud deployment requires a DIFFERENT redirect URI than local installation.
+
+* Go to the [TickTick OpenAPI Documentation](https://developer.ticktick.com/docs#/openapi) and log in
+* Click on `Manage Apps` in the top right corner
+* Register a new app (or edit your existing one) with name like "MCP Server Cloud"
+* Note down the `Client ID` and `Client Secret`
+* For the `OAuth Redirect URL`, enter: `https://<your-deployment-url>/oauth/callback`
+  * Replace `<your-deployment-url>` with your actual deployment domain
+  * Example for Railway: `https://my-app.up.railway.app/oauth/callback`
+  * Example for Render: `https://my-app.onrender.com/oauth/callback`
+  * Example for Fly.io: `https://my-app.fly.dev/oauth/callback`
+  * **This exact URL must match what you put in the `TICKTICK_REDIRECT_URI` environment variable**
+
+#### 2. Set Environment Variables
+
+Configure these environment variables in your cloud platform:
+
+```bash
+TICKTICK_CLIENT_ID=your_client_id
+TICKTICK_CLIENT_SECRET=your_client_secret
+TICKTICK_REDIRECT_URI=https://<your-deployment-url>/oauth/callback
+TICKTICK_USERNAME=your_ticktick_email
+TICKTICK_PASSWORD=your_ticktick_password
+TICKTICK_OAUTH_TOKEN={paste JSON token here - see step 3}
+MCP_TRANSPORT=sse
+```
+
+**Why TICKTICK_OAUTH_TOKEN?** Unlike local deployment where OAuth happens interactively in your terminal, cloud deployments are headless. The token is obtained once via the `/oauth/start` endpoint (see step 3), then stored as an environment variable. On each startup, the server writes it to `/tmp/.token-oauth` with proper expiration handling.
+
+#### 3. Get Your OAuth Token
+
+1. Deploy your server with all environment variables EXCEPT `TICKTICK_OAUTH_TOKEN` (leave it blank for now)
+2. Once deployed, visit `https://<your-deployment-url>/oauth/start` in your browser
+3. You'll be redirected to TickTick to authorize the application
+4. After authorizing, you'll see a JSON response containing your token like:
+   ```json
+   {
+     "access_token": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+     "token_type": "bearer",
+     "expires_in": 15551999,
+     "scope": "tasks:read tasks:write"
+   }
+   ```
+5. Copy the ENTIRE JSON object (all of it, including the curly braces)
+6. Go back to your cloud platform's environment variables
+7. Set `TICKTICK_OAUTH_TOKEN` to the entire JSON string you just copied
+8. Redeploy or restart your service
+
+**Note:** No volume mounts or persistent storage needed - the token is stored in the environment variable and written to `/tmp` on each startup.
+
+#### 4. Connect from MCP Clients
+
+**From claude.ai:**
+
+1. Go to Settings → Connectors
+2. Click "Add custom connector"
+3. Enter the connector details:
+   * **Name:** TickTick (or whatever you want to call it)
+   * **Remote MCP Server URL:** `https://<your-deployment-url>/sse`
+4. Click "Add"
+
+**From other MCP clients:**
+
+You can also connect from other MCP-compatible applications like ChatGPT (in Dev mode), VS Code Agent Mode, or custom MCP clients. The connection details are the same:
+- **URL:** `https://<your-deployment-url>/sse`
+- **Transport:** Server-Sent Events (SSE)
+
+**Important:** The URL must end with `/sse` - this is the Server-Sent Events endpoint that `MCP_TRANSPORT=sse` enables.
 
 ## 🔧 Tools
 
