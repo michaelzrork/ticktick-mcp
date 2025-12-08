@@ -845,3 +845,90 @@ async def ticktick_get_all(search: str) -> str:
     except Exception as e:
         logging.error(f"Failed to get all items of type {search}: {e}", exc_info=True)
         return format_response({"error": f"Failed to get all items of type {search}: {e}"})
+
+@mcp.tool()
+@require_ticktick_client
+async def ticktick_get_task_activity(task_id: str) -> str:
+    """
+    Retrieves the activity/audit log for a specific task.
+    
+    This shows the complete history of changes made to a task, including:
+    - Task creation (T_CREATE)
+    - Title changes (T_TITLE)
+    - Due date changes (T_DUE)
+    - Priority changes (T_PRIORITY)
+    - Content/description changes (T_CONTENT)
+    - Tag changes (T_TAG)
+    - Project moves (T_PROJECT)
+    - Status changes (T_STATUS)
+    - And other modifications
+    
+    Each activity entry includes:
+    - id: Unique activity ID
+    - action: Type of change (e.g., T_CREATE, T_TITLE, T_DUE)
+    - when: Timestamp of the change (ISO 8601 format)
+    - deviceChannel: Where the change was made (web, android, ios, etc.)
+    - whoProfile: Information about who made the change
+    - Before/after values for the changed fields
+
+    Args:
+        task_id (str): The ID string of the task. Required.
+                      Must be a valid TickTick task ID.
+
+    Returns:
+        A JSON string with one of the following structures:
+        - Success: A list of activity objects showing the task's history (chronologically ordered, oldest first)
+        - Empty: [] if no activity history exists
+        - Error: {"error": "Error message describing what went wrong"}
+
+    Limitations:
+        - Only shows history for tasks the user has access to
+        - Activity history may be limited based on TickTick's retention policy
+        - Some activity types may not be captured depending on how changes were made
+        - Deleted tasks may not have accessible activity logs
+
+    Examples:
+        Get activity log for a task:
+        {
+            "task_id": "task_id_12345"
+        }
+
+    Agent Usage Guide:
+        - Use this tool when users ask "what changed on this task" or "show me the history"
+        - Helpful for understanding when and how a task was modified
+        - Can help troubleshoot issues like "why did my due date change?"
+        - Example mapping:
+          "Show me the history of my quarterly report task" →
+          First find the task ID using ticktick_filter_tasks
+          Then: {"task_id": "[found task ID]"}
+        - Present the activity in a readable format, explaining what each change means
+    """
+    logging.info(f"Attempting to get activity log for task ID: {task_id}")
+    try:
+        client = TickTickClientSingleton.get_client()
+        
+        # The activity endpoint is: /api/v1/task/activity/{taskId}
+        # We need to make a direct API call since ticktick-py doesn't expose this
+        import requests
+        
+        # Get the base URL and auth from the client
+        base_url = "https://api.ticktick.com/api/v1"
+        activity_url = f"{base_url}/task/activity/{task_id}"
+        
+        # Use the client's session which has auth headers
+        response = client.http_client.get(activity_url)
+        
+        if response.status_code == 200:
+            activity_log = response.json()
+            logging.info(f"Successfully retrieved activity log for task {task_id}")
+            return format_response(activity_log)
+        elif response.status_code == 404:
+            logging.warning(f"No activity found for task {task_id}")
+            return format_response({"error": f"Task with ID {task_id} not found or has no activity history.", "status": "not_found"})
+        else:
+            logging.error(f"Failed to get activity for task {task_id}: HTTP {response.status_code}")
+            return format_response({"error": f"Failed to retrieve activity: HTTP {response.status_code}"})
+            
+    except Exception as e:
+        logging.error(f"Failed to get activity for task {task_id}: {e}", exc_info=True)
+        return format_response({"error": f"Failed to get activity for task {task_id}: {e}"})
