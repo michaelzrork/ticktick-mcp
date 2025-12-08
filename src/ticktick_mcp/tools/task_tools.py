@@ -601,9 +601,16 @@ async def ticktick_pin_task(task_id: str) -> str:
           First find the task ID
           Then: {"task_id": "[found task ID]"}
     """
+        
     try:
         import requests
         client = TickTickClientSingleton.get_client()
+        
+        logging.info(f"Client type: {type(client)}")
+        logging.info(f"Client has 'session': {hasattr(client, 'session')}")
+        logging.info(f"Client has 'http': {hasattr(client, 'http')}")
+        logging.info(f"Client has '_session': {hasattr(client, '_session')}")
+        logging.info(f"Client attributes: {[attr for attr in dir(client) if not attr.startswith('_')]}")
 
         task_obj = client.get_by_id(task_id)
         if not task_obj or not isinstance(task_obj, dict) or not task_obj.get('projectId'):
@@ -624,9 +631,10 @@ async def ticktick_pin_task(task_id: str) -> str:
         }
         
         # Make raw API call to batch endpoint
-        response = client.http.post(
+        response = requests.post(
             "https://api.ticktick.com/api/v2/batch/task",
-            json=batch_payload
+            json=batch_payload,
+            cookies=client.cookies
         )
         
         if response.status_code == 200:
@@ -681,6 +689,12 @@ async def ticktick_unpin_task(task_id: str) -> str:
     try:
         import requests
         client = TickTickClientSingleton.get_client()
+        
+        logging.info(f"Client type: {type(client)}")
+        logging.info(f"Client has 'session': {hasattr(client, 'session')}")
+        logging.info(f"Client has 'http': {hasattr(client, 'http')}")
+        logging.info(f"Client has '_session': {hasattr(client, '_session')}")
+        logging.info(f"Client attributes: {[attr for attr in dir(client) if not attr.startswith('_')]}")
 
         task_obj = client.get_by_id(task_id)
         if not task_obj or not isinstance(task_obj, dict) or not task_obj.get('projectId'):
@@ -700,9 +714,10 @@ async def ticktick_unpin_task(task_id: str) -> str:
         }
         
         # Make raw API call to batch endpoint
-        response = client.http.post(
+        response = requests.post(
             "https://api.ticktick.com/api/v2/batch/task",
-            json=batch_payload
+            json=batch_payload,
+            cookies=client.cookies
         )
         
         if response.status_code == 200:
