@@ -601,16 +601,8 @@ async def ticktick_pin_task(task_id: str) -> str:
           First find the task ID
           Then: {"task_id": "[found task ID]"}
     """
-        
     try:
-        import requests
         client = TickTickClientSingleton.get_client()
-        
-        logging.info(f"Client type: {type(client)}")
-        logging.info(f"Client has 'session': {hasattr(client, 'session')}")
-        logging.info(f"Client has 'http': {hasattr(client, 'http')}")
-        logging.info(f"Client has '_session': {hasattr(client, '_session')}")
-        logging.info(f"Client attributes: {[attr for attr in dir(client) if not attr.startswith('_')]}")
 
         task_obj = client.get_by_id(task_id)
         if not task_obj or not isinstance(task_obj, dict) or not task_obj.get('projectId'):
@@ -630,16 +622,14 @@ async def ticktick_pin_task(task_id: str) -> str:
             "deleteAttachments": []
         }
         
-        # Make raw API call to batch endpoint
-        response = requests.post(
+        # Use client's http_post method which maintains authentication
+        response = client.http_post(
             "https://api.ticktick.com/api/v2/batch/task",
-            json=batch_payload,
-            cookies=client.cookies
+            json=batch_payload
         )
         
         if response.status_code == 200:
             logging.info(f"Successfully pinned task ID: {task_id}")
-            # Return the updated task from the response
             result = response.json()
             if result.get('update') and len(result['update']) > 0:
                 return format_response(result['update'][0])
@@ -687,14 +677,7 @@ async def ticktick_unpin_task(task_id: str) -> str:
           Then: {"task_id": "[found task ID]"}
     """
     try:
-        import requests
         client = TickTickClientSingleton.get_client()
-        
-        logging.info(f"Client type: {type(client)}")
-        logging.info(f"Client has 'session': {hasattr(client, 'session')}")
-        logging.info(f"Client has 'http': {hasattr(client, 'http')}")
-        logging.info(f"Client has '_session': {hasattr(client, '_session')}")
-        logging.info(f"Client attributes: {[attr for attr in dir(client) if not attr.startswith('_')]}")
 
         task_obj = client.get_by_id(task_id)
         if not task_obj or not isinstance(task_obj, dict) or not task_obj.get('projectId'):
@@ -713,16 +696,14 @@ async def ticktick_unpin_task(task_id: str) -> str:
             "deleteAttachments": []
         }
         
-        # Make raw API call to batch endpoint
-        response = requests.post(
+        # Use client's http_post method which maintains authentication
+        response = client.http_post(
             "https://api.ticktick.com/api/v2/batch/task",
-            json=batch_payload,
-            cookies=client.cookies
+            json=batch_payload
         )
         
         if response.status_code == 200:
             logging.info(f"Successfully unpinned task ID: {task_id}")
-            # Return the updated task from the response
             result = response.json()
             if result.get('update') and len(result['update']) > 0:
                 return format_response(result['update'][0])
