@@ -29,12 +29,12 @@ Refer to the tool definitions within the `src/ticktick_mcp/tools/` directory for
 
 ## 📋 Table of Contents
 
-- [Local Installation](#🖥️-local-installation)
-- [Cloud Deployment](#☁️-cloud-deployment)
-- [Tools](#🔧-tools)
-- [Sample Agent Prompt](#🤖-sample-agent-prompt)
-- [Contributing](#🤝-contributing)
-- [License](#📜-license)
+- [Local Installation](#%EF%B8%8F-local-installation)
+- [Cloud Deployment](#%EF%B8%8F-cloud-deployment)
+- [Tools](#-tools)
+- [Sample Agent Prompt]([#-sample-agent-prompt))
+- [Contributing](#-contributing)
+- [License](#-license)
 
 ## 🖥️ Local Installation
 
