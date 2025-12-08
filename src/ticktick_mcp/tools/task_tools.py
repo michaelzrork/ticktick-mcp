@@ -622,11 +622,14 @@ async def ticktick_pin_task(task_id: str) -> str:
             "deleteAttachments": []
         }
         
-        # Use client's http_post method which maintains authentication
-        response = client.http_post(
+        # Use client's private _session directly to bypass status code check
+        response = client._session.post(
             "https://api.ticktick.com/api/v2/batch/task",
             json=batch_payload
         )
+        
+        logging.info(f"Batch API response status: {response.status_code}")
+        logging.info(f"Batch API response text: {response.text}")
         
         if response.status_code == 200:
             logging.info(f"Successfully pinned task ID: {task_id}")
