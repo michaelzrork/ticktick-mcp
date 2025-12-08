@@ -916,7 +916,7 @@ async def ticktick_get_task_activity(task_id: str) -> str:
         activity_url = f"{base_url}/task/activity/{task_id}"
         
         # Use the client's session which has auth headers
-        response = client.http_client.get(activity_url)
+        response = client.http.get(activity_url)
         
         if response.status_code == 200:
             activity_log = response.json()
