@@ -32,7 +32,7 @@ Refer to the tool definitions within the `src/ticktick_mcp/tools/` directory for
 - [Local Installation](#%EF%B8%8F-local-installation)
 - [Cloud Deployment](#%EF%B8%8F-cloud-deployment)
 - [Tools](#-tools)
-- [Sample Agent Prompt]([#-sample-agent-prompt))
+- [Sample Agent Prompt](#-sample-agent-prompt)
 - [Contributing](#-contributing)
 - [License](#-license)
 
