@@ -615,12 +615,12 @@ async def ticktick_pin_task(task_id: str) -> str:
         # Try using the official OpenAPI update endpoint
         url = f"{client.OPEN_API_BASE_URL}/open/v1/task/{task_id}"
         
-        # Get OAuth access token from the oauth_manager
-        oauth_token = client.oauth_manager.access_token
+        # Get OAuth access token - it's stored in the token dict
+        oauth_token = client.oauth_manager.get_access_token()
         
         # Use OAuth Bearer token for auth
         headers = {
-            'Authorization': f'Bearer {oauth_token}',
+            'Authorization': f'Bearer {oauth_token["access_token"]}',
             'Content-Type': 'application/json'
         }
         
