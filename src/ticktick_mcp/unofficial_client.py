@@ -90,59 +90,64 @@ class UnofficialAPIClient:
         return self._session
 
     # ==================== Sync/Fetch Operations ====================
+    # Uses ticktick-py's cached state (populated during init) for reads.
+    # Call sync() to refresh the cache if needed.
 
-    def sync_all(self) -> dict[str, Any]:
+    def sync(self) -> None:
         """
-        Fetch all data from TickTick (tasks, projects, tags, etc.).
+        Refresh the cached data by calling ticktick-py's sync.
 
-        Uses the batch/check endpoint with checkpoint=0 for a full sync.
-
-        Returns:
-            Dict containing syncTaskBean, projectProfiles, tags, etc.
+        This updates the internal state with fresh data from TickTick.
+        Use sparingly to avoid rate limits.
         """
-        url = "https://api.ticktick.com/api/v2/batch/check/0"
-        response = self.session.get(url)
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            raise RuntimeError(f"Sync failed {response.status_code}: {response.text[:200]}")
+        if not self._ticktick_client:
+            raise RuntimeError("Client not initialized")
+        self._ticktick_client.sync()
+        logger.info("Synced data from TickTick")
 
     def get_all_tasks(self) -> list[dict]:
-        """Get all tasks via sync."""
-        data = self.sync_all()
-        return data.get("syncTaskBean", {}).get("update", [])
+        """Get all tasks from cached state."""
+        if not self._ticktick_client:
+            raise RuntimeError("Client not initialized")
+        state = self._ticktick_client.state
+        tasks = state.get("tasks", {})
+        # Handle both dict and list formats
+        if isinstance(tasks, dict):
+            return list(tasks.values())
+        return tasks if isinstance(tasks, list) else []
 
     def get_all_projects(self) -> list[dict]:
-        """Get all projects via sync."""
-        data = self.sync_all()
-        return data.get("projectProfiles", [])
+        """Get all projects from cached state."""
+        if not self._ticktick_client:
+            raise RuntimeError("Client not initialized")
+        state = self._ticktick_client.state
+        projects = state.get("projects", {})
+        if isinstance(projects, dict):
+            return list(projects.values())
+        return projects if isinstance(projects, list) else []
 
     def get_all_tags(self) -> list[dict]:
-        """Get all tags via sync."""
-        data = self.sync_all()
-        return data.get("tags", [])
+        """Get all tags from cached state."""
+        if not self._ticktick_client:
+            raise RuntimeError("Client not initialized")
+        state = self._ticktick_client.state
+        tags = state.get("tags", {})
+        if isinstance(tags, dict):
+            return list(tags.values())
+        return tags if isinstance(tags, list) else []
 
     def get_task_by_id(self, task_id: str) -> Optional[dict]:
-        """
-        Get a specific task by ID.
-
-        Fetches all tasks and finds the matching one.
-        For better performance with known project_id, use get_task().
-        """
-        tasks = self.get_all_tasks()
-        for task in tasks:
-            if task.get("id") == task_id:
-                return task
-        return None
+        """Get a specific task by ID from cached state."""
+        if not self._ticktick_client:
+            raise RuntimeError("Client not initialized")
+        # Use ticktick-py's get_by_id method
+        return self._ticktick_client.get_by_id(task_id)
 
     def get_project_by_id(self, project_id: str) -> Optional[dict]:
-        """Get a specific project by ID."""
-        projects = self.get_all_projects()
-        for project in projects:
-            if project.get("id") == project_id:
-                return project
-        return None
+        """Get a specific project by ID from cached state."""
+        if not self._ticktick_client:
+            raise RuntimeError("Client not initialized")
+        return self._ticktick_client.get_by_id(project_id)
 
     def get_tasks_from_project(self, project_id: str, status: int = 0) -> list[dict]:
         """
@@ -152,11 +157,13 @@ class UnofficialAPIClient:
             project_id: The project ID
             status: 0=uncompleted, 2=completed (default: 0)
         """
-        tasks = self.get_all_tasks()
-        return [
-            t for t in tasks
-            if t.get("projectId") == project_id and t.get("status", 0) == status
-        ]
+        if not self._ticktick_client:
+            raise RuntimeError("Client not initialized")
+        return self._ticktick_client.get_by_fields(
+            search="tasks",
+            projectId=project_id,
+            status=status
+        )
 
     # ==================== Task CRUD Operations ====================
 

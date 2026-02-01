@@ -157,27 +157,33 @@ def ticktick_set_repeat_from(
 
 
 @mcp.tool()
-def ticktick_sync_all() -> dict[str, Any]:
+def ticktick_sync_and_get_all(force_refresh: bool = False) -> dict[str, Any]:
     """
-    Fetch all data from TickTick via the unofficial API.
+    Get all data from TickTick via the unofficial API.
 
-    Returns tasks, projects, tags, and other synced data.
-    This makes a live API call (not cached).
+    By default uses cached data from server startup. Set force_refresh=True
+    to fetch fresh data (use sparingly to avoid rate limits).
+
+    Args:
+        force_refresh: If True, sync fresh data before returning (default: False)
 
     Returns:
         Dict with tasks, projects, tags counts and data
     """
-    logger.info("ticktick_sync_all called")
+    logger.info(f"ticktick_sync_and_get_all called (force_refresh={force_refresh})")
 
     try:
         client = _get_api_client()
-        data = client.sync_all()
 
-        tasks = data.get("syncTaskBean", {}).get("update", [])
-        projects = data.get("projectProfiles", [])
-        tags = data.get("tags", [])
+        if force_refresh:
+            client.sync()
+            logger.info("Forced sync completed")
 
-        logger.info(f"Synced {len(tasks)} tasks, {len(projects)} projects, {len(tags)} tags")
+        tasks = client.get_all_tasks()
+        projects = client.get_all_projects()
+        tags = client.get_all_tags()
+
+        logger.info(f"Retrieved {len(tasks)} tasks, {len(projects)} projects, {len(tags)} tags")
 
         return {
             "success": True,
@@ -189,7 +195,7 @@ def ticktick_sync_all() -> dict[str, Any]:
             "tag_count": len(tags)
         }
     except Exception as e:
-        logger.error(f"Failed to sync: {e}")
+        logger.error(f"Failed to get data: {e}")
         return {"error": str(e)}
 
 
@@ -198,6 +204,7 @@ def ticktick_get_by_id(obj_id: str) -> dict[str, Any]:
     """
     Get any TickTick object by its ID via the unofficial API.
 
+    Uses cached data from server startup (fast, no API call).
     Searches through tasks, then projects to find the object.
 
     Args:
@@ -237,7 +244,7 @@ def ticktick_get_all(
     """
     Get all objects of a specific type via the unofficial API.
 
-    Makes a live API call to fetch current data.
+    Uses cached data from server startup (fast, no API call).
 
     Args:
         obj_type: Type of objects to retrieve - "tasks", "projects", or "tags"
@@ -273,6 +280,8 @@ def ticktick_get_tasks_from_project(
 ) -> dict[str, Any] | list[dict]:
     """
     Get tasks from a specific project via the unofficial API.
+
+    Uses cached data from server startup (fast, no API call).
 
     Args:
         project_id: The project ID to get tasks from
