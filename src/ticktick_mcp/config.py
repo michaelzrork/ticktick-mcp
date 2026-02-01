@@ -47,9 +47,9 @@ args, _ = parser.parse_known_args()
 CONFIG_DIR = Path(args.dotenv_dir).expanduser()
 
 # --- Module Globals ---
-CLIENT_ID: str = ""
-CLIENT_SECRET: str = ""
-REDIRECT_URI: str = ""
+CLIENT_ID: str | None = None
+CLIENT_SECRET: str | None = None
+REDIRECT_URI: str | None = None
 ACCESS_TOKEN: str | None = None
 USER_ID: str | None = None
 USERNAME: str | None = None
@@ -133,8 +133,8 @@ def _save_token_cache(access_token: str, refresh_token: str | None = None, expir
     token_data = {"access_token": access_token}
     if refresh_token: token_data["refresh_token"] = refresh_token
     if expires_in:
-        token_data["expires_in"] = expires_in
-        token_data["expire_time"] = int(time.time()) + expires_in
+        token_data["expires_in"] = str(expires_in)
+        token_data["expire_time"] = str(int(time.time()) + expires_in)
 
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
