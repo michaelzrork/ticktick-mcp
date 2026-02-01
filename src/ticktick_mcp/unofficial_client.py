@@ -10,21 +10,15 @@ This eliminates the stale cache problem that plagued the ticktick-py approach.
 
 import json
 import logging
-import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import httpx
 
 from .config import (
-    CLIENT_ID,
-    CLIENT_SECRET,
-    REDIRECT_URI,
     USERNAME,
     PASSWORD,
-    dotenv_dir_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,8 +78,8 @@ class UnofficialAPIClient:
         self._time_zone: Optional[str] = None
         self._profile_id: Optional[str] = None
         
-        if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
-            logger.error("TickTick credentials not found. Ensure .env file or env vars are set.")
+        if not all([USERNAME, PASSWORD]):
+            logger.error("TickTick credentials not found. Set TICKTICK_USERNAME and TICKTICK_PASSWORD.")
             UnofficialAPIClient._initialized = True
             return
         
@@ -99,7 +93,13 @@ class UnofficialAPIClient:
             UnofficialAPIClient._initialized = True
     
     def _initialize_client(self):
-        """Set up authenticated httpx client."""
+        """
+        Set up authenticated httpx client.
+        
+        IMPORTANT: The OAuth2 token in .token-oauth is for the OFFICIAL API only.
+        The unofficial API requires a SESSION token from /user/signon.
+        We ALWAYS call _login() with username/password to get the session token.
+        """
         # Create httpx client with default headers
         self._client = httpx.Client(
             headers=self.DEFAULT_HEADERS,
@@ -107,31 +107,9 @@ class UnofficialAPIClient:
             follow_redirects=True
         )
         
-        # Try to load cached token first
-        token_path = dotenv_dir_path / ".token-oauth"
-        token_loaded = False
-        
-        if token_path.exists():
-            try:
-                token_data = json.loads(token_path.read_text())
-                expire_time = token_data.get("expire_time", 0)
-                
-                # Check if token is still valid (with 5 min buffer)
-                if expire_time > time.time() + 300:
-                    self._access_token = token_data.get("access_token")
-                    if self._access_token:
-                        self._client.cookies.set("t", self._access_token)
-                        logger.info("Loaded access token from cache")
-                        token_loaded = True
-                else:
-                    logger.info("Cached token expired, will re-authenticate")
-            except Exception as e:
-                logger.warning(f"Failed to load cached token: {e}")
-        
-        # If no valid cached token, do full login
-        if not token_loaded:
-            self._login()
-            self._save_token()
+        # Always do username/password login to get session token
+        # The OAuth2 token in cache is for the official API, NOT the unofficial API
+        self._login()
         
         # Load user settings (timezone, profile_id)
         self._load_settings()
@@ -163,25 +141,6 @@ class UnofficialAPIClient:
         # Set the cookie for subsequent requests
         self._client.cookies.set("t", self._access_token)
         logger.info("Login successful, access token obtained")
-    
-    def _save_token(self):
-        """Save token to cache file."""
-        if not self._access_token:
-            return
-        
-        token_data = {
-            "access_token": self._access_token,
-            "token_type": "bearer",
-            "expires_in": 15552000,  # ~180 days
-            "expire_time": int(time.time()) + 15552000
-        }
-        
-        try:
-            token_path = dotenv_dir_path / ".token-oauth"
-            token_path.write_text(json.dumps(token_data, indent=2))
-            logger.info(f"Saved token to {token_path}")
-        except Exception as e:
-            logger.warning(f"Failed to save token: {e}")
     
     def _load_settings(self):
         """Load user settings (timezone, profile_id)."""
