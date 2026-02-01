@@ -103,19 +103,22 @@ async def ticktick_set_repeat_from(
 
 @mcp.tool()
 async def ticktick_get_task_activity(
-    project_id: str,
-    task_id: str,
-    limit: int = 50
+    task_id: str
 ) -> list[dict] | str:
     """
     Get the activity log for a specific task.
 
-    Shows history of changes, completions, and modifications.
+    Shows history of changes, completions, and modifications including:
+    - T_REPEAT: Task repeated/rescheduled
+    - T_DUE: Due date changed
+    - T_CREATE: Task created
+    - T_COMPLETE: Task completed
+    - T_UPDATE: Task updated
+
+    Each entry includes timestamps, before/after values, and device info.
 
     Args:
-        project_id: The project ID containing the task
         task_id: The task ID
-        limit: Maximum number of activities to return (default: 50)
 
     Returns:
         List of activity entries or error message
@@ -125,39 +128,9 @@ async def ticktick_get_task_activity(
         return "Error: Unofficial API not configured. Set TICKTICK_USERNAME and TICKTICK_PASSWORD environment variables."
 
     try:
-        activities = await client.get_task_activity(project_id, task_id, limit)
+        activities = await client.get_task_activity(task_id)
         if not activities:
             return []
         return activities
     except Exception as e:
         return f"Error getting task activity: {str(e)}"
-
-
-@mcp.tool()
-async def ticktick_get_project_activity(
-    project_id: str,
-    limit: int = 50
-) -> list[dict] | str:
-    """
-    Get the activity log for a project.
-
-    Shows history of task changes, completions, and modifications in the project.
-
-    Args:
-        project_id: The project ID
-        limit: Maximum number of activities to return (default: 50)
-
-    Returns:
-        List of activity entries or error message
-    """
-    client = await config.get_unofficial_client()
-    if not client:
-        return "Error: Unofficial API not configured. Set TICKTICK_USERNAME and TICKTICK_PASSWORD environment variables."
-
-    try:
-        activities = await client.get_project_activity(project_id, limit)
-        if not activities:
-            return []
-        return activities
-    except Exception as e:
-        return f"Error getting project activity: {str(e)}"

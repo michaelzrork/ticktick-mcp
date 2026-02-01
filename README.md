@@ -179,8 +179,7 @@ These require `TICKTICK_USERNAME` and `TICKTICK_PASSWORD` to be set:
 | `ticktick_pin_task` | Pin a task to the top of the list |
 | `ticktick_unpin_task` | Unpin a task |
 | `ticktick_set_repeat_from` | Set whether recurring task repeats from due date or completion date |
-| `ticktick_get_task_activity` | Get activity log for a task |
-| `ticktick_get_project_activity` | Get activity log for a project |
+| `ticktick_get_task_activity` | Get activity log for a task (repeats, due date changes, completions) |
 
 ### Task Properties
 

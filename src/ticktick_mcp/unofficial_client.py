@@ -345,49 +345,74 @@ class TickTickUnofficialClient:
 
     async def get_task_activity(
         self,
-        project_id: str,
         task_id: str,
-        limit: int = 100
+        skip: int = 0
     ) -> list[dict]:
         """
         Get activity log for a specific task.
 
+        Endpoint: GET /api/v1/task/activity/{taskId}
+
         Args:
-            project_id: Project ID containing the task
             task_id: Task ID
-            limit: Maximum number of activities to return
+            skip: Number of entries to skip (for pagination)
 
         Returns:
-            List of activity log entries
+            List of activity log entries with fields like:
+            - id: Activity ID
+            - action: Action type (T_REPEAT, T_DUE, T_CREATE, etc.)
+            - when: Timestamp
+            - deviceChannel: Device used (web, android, ios)
+            - startDate/startDateBefore: Date changes
+            - dueDate/dueDateBefore: Due date changes
+            - whoProfile: User info
         """
-        result = await self._request(
-            "GET",
-            f"/project/{project_id}/task/{task_id}/activity",
-            params={"limit": limit}
-        )
-        return result if result else []
+        if not self.is_authenticated:
+            raise TickTickUnofficialAPIError(
+                status_code=401,
+                message="Not authenticated. Call login() first."
+            )
 
-    async def get_project_activity(
-        self,
-        project_id: str,
-        limit: int = 100
-    ) -> list[dict]:
-        """
-        Get activity log for a project.
+        client = await self._get_client()
 
-        Args:
-            project_id: Project ID
-            limit: Maximum number of activities to return
+        # Activity log uses /api/v1/ not /api/v2/
+        url = f"https://api.ticktick.com/api/v1/task/activity/{task_id}"
+        params = {}
+        if skip > 0:
+            params["skip"] = skip
 
-        Returns:
-            List of activity log entries
-        """
-        result = await self._request(
-            "GET",
-            f"/project/{project_id}/activity",
-            params={"limit": limit}
-        )
-        return result if result else []
+        try:
+            response = await client.request(
+                method="GET",
+                url=url,
+                params=params if params else None,
+                cookies=self._get_cookies()
+            )
+
+            logger.debug(f"GET {url} -> {response.status_code}")
+
+            if response.status_code >= 400:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                raise TickTickUnofficialAPIError(
+                    status_code=response.status_code,
+                    message=f"API request failed: {url}",
+                    response_body=body
+                )
+
+            if response.status_code == 204 or not response.content:
+                return []
+
+            return response.json()
+
+        except httpx.RequestError as e:
+            logger.error(f"Request error: {e}")
+            raise TickTickUnofficialAPIError(
+                status_code=0,
+                message=f"Request failed: {str(e)}"
+            )
 
 
 # Singleton instance
