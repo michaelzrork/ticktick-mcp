@@ -61,16 +61,32 @@ async def legacy_ticktick_get_task_activity(task_id: str) -> str:
     try:
         ticktick_py_client = client._ticktick_client
         logger.info(f"  ticktick_py_client type: {type(ticktick_py_client).__name__}")
-        logger.info(f"  ticktick_py_client has 'http': {hasattr(ticktick_py_client, 'http')}")
+
+        # Inspect what attributes are available on the TickTickClient
+        attrs = [a for a in dir(ticktick_py_client) if not a.startswith('_')]
+        logger.info(f"  Available public attributes: {attrs}")
+
+        # Check for various possible session/http attributes
+        logger.info(f"  has 'http': {hasattr(ticktick_py_client, 'http')}")
+        logger.info(f"  has 'session': {hasattr(ticktick_py_client, 'session')}")
+        logger.info(f"  has '_session': {hasattr(ticktick_py_client, '_session')}")
+        logger.info(f"  has 'requests': {hasattr(ticktick_py_client, 'requests')}")
+        logger.info(f"  has 'cookies': {hasattr(ticktick_py_client, 'cookies')}")
+        logger.info(f"  has 'access_token': {hasattr(ticktick_py_client, 'access_token')}")
+
+        if hasattr(ticktick_py_client, 'cookies'):
+            logger.info(f"  cookies: {dict(ticktick_py_client.cookies)}")
+        if hasattr(ticktick_py_client, 'access_token'):
+            logger.info(f"  access_token: {ticktick_py_client.access_token[:20]}***")
+
+        base_url = "https://api.ticktick.com/api/v1"
+        activity_url = f"{base_url}/task/activity/{task_id}"
 
         # The old code used client.http.get()
         if hasattr(ticktick_py_client, 'http'):
             logger.info(f"  ticktick_py_client.http: {ticktick_py_client.http}")
             logger.info(f"  ticktick_py_client.http type: {type(ticktick_py_client.http).__name__}")
-
-            base_url = "https://api.ticktick.com/api/v1"
-            activity_url = f"{base_url}/task/activity/{task_id}"
-            logger.info(f"  Making request to: {activity_url}")
+            logger.info(f"  Making request via http.get to: {activity_url}")
 
             response = ticktick_py_client.http.get(activity_url)
             logger.info(f"  Response status_code: {response.status_code}")
@@ -84,23 +100,53 @@ async def legacy_ticktick_get_task_activity(task_id: str) -> str:
                 logger.error(f"  FAILED: HTTP {response.status_code}")
                 logger.error(f"  Response text: {response.text[:500]}")
                 return json.dumps({"error": f"HTTP {response.status_code}: {response.text}"})
-        else:
-            logger.warning("  ticktick_py_client has no 'http' attribute")
 
-            # Try http_get method (used by new code)
-            logger.info("  Trying http_get method instead...")
-            if hasattr(ticktick_py_client, 'http_get'):
-                base_url = "https://api.ticktick.com/api/v1"
-                activity_url = f"{base_url}/task/activity/{task_id}"
-                logger.info(f"  Making request to: {activity_url}")
+        # Try to find the underlying session in ticktick-py v2.0.0
+        elif hasattr(ticktick_py_client, 'session'):
+            session = ticktick_py_client.session
+            logger.info(f"  Found 'session' attribute: {type(session).__name__}")
+            logger.info(f"  Making request via session.get to: {activity_url}")
 
-                result = ticktick_py_client.http_get(activity_url)
-                logger.info(f"  http_get returned: {type(result).__name__}")
-                logger.info(f"  Result: {str(result)[:500]}")
-                return json.dumps(result, indent=2) if result else json.dumps([])
+            response = session.get(activity_url)
+            logger.info(f"  Response status_code: {response.status_code}")
+
+            if response.status_code == 200:
+                activity_log = response.json()
+                logger.info(f"  SUCCESS! Got {len(activity_log)} activity entries")
+                return json.dumps(activity_log, indent=2)
             else:
-                logger.error("  No http or http_get method available!")
-                return json.dumps({"error": "No http method available on ticktick-py client"})
+                logger.error(f"  FAILED: HTTP {response.status_code}")
+                logger.error(f"  Response text: {response.text[:500]}")
+                return json.dumps({"error": f"HTTP {response.status_code}: {response.text}"})
+
+        else:
+            logger.warning("  No 'http' or 'session' attribute found")
+
+            # Try making a raw request with the cookies from ticktick-py
+            import requests
+            logger.info("  Trying raw requests with cookies...")
+
+            cookies = {}
+            if hasattr(ticktick_py_client, 'cookies'):
+                cookies = dict(ticktick_py_client.cookies)
+            if hasattr(ticktick_py_client, 'access_token') and ticktick_py_client.access_token:
+                cookies['t'] = ticktick_py_client.access_token
+
+            logger.info(f"  Using cookies: {list(cookies.keys())}")
+            logger.info(f"  Making request to: {activity_url}")
+
+            response = requests.get(activity_url, cookies=cookies)
+            logger.info(f"  Response status_code: {response.status_code}")
+            logger.info(f"  Response headers: {dict(response.headers)}")
+
+            if response.status_code == 200:
+                activity_log = response.json()
+                logger.info(f"  SUCCESS! Got {len(activity_log)} activity entries")
+                return json.dumps(activity_log, indent=2)
+            else:
+                logger.error(f"  FAILED: HTTP {response.status_code}")
+                logger.error(f"  Response text: {response.text[:500]}")
+                return json.dumps({"error": f"HTTP {response.status_code}: {response.text}"})
 
     except Exception as e:
         logger.error(f"  EXCEPTION: {e}")
