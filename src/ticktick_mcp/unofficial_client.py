@@ -22,6 +22,33 @@ from ticktick.api import TickTickClient
 logger = logging.getLogger(__name__)
 
 
+# ============== Monkey patch for ticktick-py ==============
+# TickTick changed their API endpoint from /user/signin to /user/signon
+# See: https://github.com/lazeroffmichael/ticktick-py/issues/56
+def _patched_login(self, username: str, password: str) -> None:
+    """Patched login method using updated endpoint and headers."""
+    import secrets
+
+    # Updated headers matching current browser
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+        'x-device': '{"platform":"web","os":"Windows 10","device":"Firefox 123.0","name":"","version":4576,"id":"' + secrets.token_hex(12) + '","channel":"website","campaign":"","websocket":""}'
+    }
+
+    url = self.BASE_URL + 'user/signon'  # Changed from signin to signon
+    user_info = {'username': username, 'password': password}
+    parameters = {'wc': True, 'remember': True}
+
+    response = self.http_post(url, json=user_info, params=parameters, headers=headers)
+    self.access_token = response['token']
+    self.cookies['t'] = self.access_token
+
+
+# Apply the monkey patch
+TickTickClient._login = _patched_login
+# ============== End monkey patch ==============
+
+
 class TickTickUnofficialAPIError(Exception):
     """Exception raised for unofficial TickTick API errors."""
 
