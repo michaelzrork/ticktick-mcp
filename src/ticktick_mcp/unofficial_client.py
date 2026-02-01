@@ -112,8 +112,11 @@ class TickTickUnofficialClient:
         client = await self._get_client()
 
         try:
+            # Log the request (without exposing password)
+            logger.info(f"Attempting login for user: {username} (password length: {len(password)})")
+
             response = await client.post(
-                f"{self.BASE_URL}/user/signin",
+                f"{self.BASE_URL}/user/signon",
                 params={"wc": True, "remember": True},
                 json={
                     "username": username,
