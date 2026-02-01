@@ -114,7 +114,7 @@ class TickTickUnofficialClient:
 
         try:
             response = await client.post(
-                f"{self.BASE_URL}/user/signin",
+                f"{self.BASE_URL}/user/signon",
                 params={"wc": "true", "remember": "true"},
                 json={
                     "username": username,
