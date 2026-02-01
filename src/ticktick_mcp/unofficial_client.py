@@ -1,20 +1,31 @@
 """
 TickTick Unofficial API Client.
 
-Uses ticktick-py only for OAuth2 authentication to get an authenticated session.
-All data operations use direct API calls to unofficial v2 endpoints.
+Direct API access without ticktick-py dependency.
+Handles its own OAuth2 authentication and makes fresh API calls for all reads.
+NO CACHING - every read fetches fresh data from the API.
 
-This avoids ticktick-py's full data sync on init, providing live API access.
+This eliminates the stale cache problem that plagued the ticktick-py approach.
 """
 
+import json
 import logging
-from typing import Optional, Any
-import requests
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
 
-from ticktick.api import TickTickClient
-from ticktick.oauth2 import OAuth2
+import httpx
 
-from .config import CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD, dotenv_dir_path
+from .config import (
+    CLIENT_ID,
+    CLIENT_SECRET,
+    REDIRECT_URI,
+    USERNAME,
+    PASSWORD,
+    dotenv_dir_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,151 +33,322 @@ logger = logging.getLogger(__name__)
 class UnofficialAPIClient:
     """
     Direct access to TickTick's unofficial v2 API.
-
-    Uses ticktick-py's OAuth2 + TickTickClient only to establish an authenticated
-    session with cookies. All data operations use direct HTTP calls.
+    
+    Key differences from the old ticktick-py based approach:
+    - No caching: Every read makes a fresh API call
+    - Self-contained OAuth2: No ticktick-py dependency
+    - Fresh data: get_all_tasks() always returns current state
     """
+    
+    BASE_URL = "https://api.ticktick.com/api/v2/"
+    BATCH_CHECK_URL = BASE_URL + "batch/check/0"
+    
+    # Headers that mimic the web app
+    USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    X_DEVICE = json.dumps({
+        "platform": "web",
+        "os": "Windows 10",
+        "device": "Chrome 120.0.0.0",
+        "name": "",
+        "version": 6260,
+        "id": uuid.uuid4().hex[:24],
+        "channel": "website",
+        "campaign": "",
+        "websocket": ""
+    })
+    
+    DEFAULT_HEADERS = {
+        "origin": "https://ticktick.com",
+        "referer": "https://ticktick.com/",
+        "user-agent": USER_AGENT,
+        "x-device": X_DEVICE,
+        "content-type": "application/json",
+    }
+    
     _instance: Optional["UnofficialAPIClient"] = None
     _initialized: bool = False
-
+    
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-
+    
     def __init__(self):
-        """Initialize the client with an authenticated session."""
+        """Initialize the client with authentication."""
         if UnofficialAPIClient._initialized:
             return
-
-        self._session: Optional[requests.Session] = None
-        self._ticktick_client: Optional[TickTickClient] = None
-
+        
+        self._client: Optional[httpx.Client] = None
+        self._access_token: Optional[str] = None
+        self._inbox_id: Optional[str] = None
+        self._time_zone: Optional[str] = None
+        self._profile_id: Optional[str] = None
+        
         if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
             logger.error("TickTick credentials not found. Ensure .env file or env vars are set.")
             UnofficialAPIClient._initialized = True
             return
-
+        
         try:
-            cache_path = dotenv_dir_path / ".token-oauth"
-            logger.info(f"Initializing OAuth2 with cache path: {cache_path}")
-
-            auth_client = OAuth2(
-                client_id=CLIENT_ID,
-                client_secret=CLIENT_SECRET,
-                redirect_uri=REDIRECT_URI,
-                cache_path=str(cache_path)
-            )
-
-            auth_client.get_access_token()
-            logger.info("OAuth2 token loaded from cache")
-
-            logger.info(f"Initializing TickTickClient for session auth: {USERNAME}")
-            self._ticktick_client = TickTickClient(USERNAME, PASSWORD, auth_client)
-            self._session = self._ticktick_client._session
-            logger.info("Unofficial API client initialized successfully")
-
+            self._initialize_client()
+            logger.info("Unofficial API client initialized successfully (no-cache mode)")
         except Exception as e:
             logger.error(f"Error initializing unofficial client: {e}", exc_info=True)
-            self._session = None
+            self._client = None
         finally:
             UnofficialAPIClient._initialized = True
-
+    
+    def _initialize_client(self):
+        """Set up authenticated httpx client."""
+        # Create httpx client with default headers
+        self._client = httpx.Client(
+            headers=self.DEFAULT_HEADERS,
+            timeout=30.0,
+            follow_redirects=True
+        )
+        
+        # Try to load cached token first
+        token_path = dotenv_dir_path / ".token-oauth"
+        token_loaded = False
+        
+        if token_path.exists():
+            try:
+                token_data = json.loads(token_path.read_text())
+                expire_time = token_data.get("expire_time", 0)
+                
+                # Check if token is still valid (with 5 min buffer)
+                if expire_time > time.time() + 300:
+                    self._access_token = token_data.get("access_token")
+                    if self._access_token:
+                        self._client.cookies.set("t", self._access_token)
+                        logger.info("Loaded access token from cache")
+                        token_loaded = True
+                else:
+                    logger.info("Cached token expired, will re-authenticate")
+            except Exception as e:
+                logger.warning(f"Failed to load cached token: {e}")
+        
+        # If no valid cached token, do full login
+        if not token_loaded:
+            self._login()
+            self._save_token()
+        
+        # Load user settings (timezone, profile_id)
+        self._load_settings()
+        
+        # Do initial sync to get inbox_id
+        self._initial_sync()
+    
+    def _login(self):
+        """Authenticate with username/password to get access token."""
+        url = self.BASE_URL + "user/signon"
+        params = {"wc": "true", "remember": "true"}
+        payload = {
+            "username": USERNAME,
+            "password": PASSWORD
+        }
+        
+        logger.info(f"Logging in as {USERNAME}")
+        response = self._client.post(url, json=payload, params=params)
+        
+        if response.status_code != 200:
+            raise RuntimeError(f"Login failed: {response.status_code} - {response.text[:200]}")
+        
+        data = response.json()
+        self._access_token = data.get("token")
+        
+        if not self._access_token:
+            raise RuntimeError("Login response missing token")
+        
+        # Set the cookie for subsequent requests
+        self._client.cookies.set("t", self._access_token)
+        logger.info("Login successful, access token obtained")
+    
+    def _save_token(self):
+        """Save token to cache file."""
+        if not self._access_token:
+            return
+        
+        token_data = {
+            "access_token": self._access_token,
+            "token_type": "bearer",
+            "expires_in": 15552000,  # ~180 days
+            "expire_time": int(time.time()) + 15552000
+        }
+        
+        try:
+            token_path = dotenv_dir_path / ".token-oauth"
+            token_path.write_text(json.dumps(token_data, indent=2))
+            logger.info(f"Saved token to {token_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save token: {e}")
+    
+    def _load_settings(self):
+        """Load user settings (timezone, profile_id)."""
+        url = self.BASE_URL + "user/preferences/settings"
+        params = {"includeWeb": "true"}
+        
+        response = self._client.get(url, params=params)
+        
+        if response.status_code != 200:
+            logger.warning(f"Failed to load settings: {response.status_code}")
+            return
+        
+        data = response.json()
+        self._time_zone = data.get("timeZone", "America/New_York")
+        self._profile_id = data.get("id")
+        logger.info(f"Loaded settings: timezone={self._time_zone}")
+    
+    def _initial_sync(self):
+        """Do initial batch sync to get inbox_id and validate connection."""
+        try:
+            data = self._fetch_batch_check()
+            self._inbox_id = data.get("inboxId")
+            logger.info(f"Initial sync complete, inbox_id={self._inbox_id}")
+        except Exception as e:
+            logger.warning(f"Initial sync failed: {e}")
+    
+    def _fetch_batch_check(self) -> dict:
+        """
+        Fetch all data from the batch/check endpoint.
+        
+        This is the core sync endpoint that returns:
+        - inboxId
+        - projectProfiles (projects)
+        - projectGroups (folders)
+        - syncTaskBean.update (tasks)
+        - tags
+        """
+        response = self._client.get(self.BATCH_CHECK_URL)
+        
+        if response.status_code != 200:
+            raise RuntimeError(f"Batch check failed: {response.status_code} - {response.text[:200]}")
+        
+        return response.json()
+    
     @classmethod
     def get_instance(cls) -> Optional["UnofficialAPIClient"]:
         """Get the singleton instance."""
         if not cls._initialized:
             cls()
         instance = cls._instance
-        if instance and instance._session:
+        if instance and instance._client:
             return instance
         return None
-
+    
     @property
-    def session(self) -> requests.Session:
-        """Get the authenticated session."""
-        if not self._session:
+    def client(self) -> httpx.Client:
+        """Get the authenticated HTTP client."""
+        if not self._client:
             raise RuntimeError("Unofficial client not initialized")
-        return self._session
-
-    # ==================== Sync/Fetch Operations ====================
-    # Uses ticktick-py's cached state (populated during init) for reads.
-    # Call sync() to refresh the cache if needed.
-
-    def sync(self) -> None:
+        return self._client
+    
+    @property
+    def inbox_id(self) -> Optional[str]:
+        """Get the inbox project ID."""
+        return self._inbox_id
+    
+    # ==================== Data Fetch Operations (FRESH - NO CACHE) ====================
+    
+    def sync(self) -> dict:
         """
-        Refresh the cached data by calling ticktick-py's sync.
-
-        This updates the internal state with fresh data from TickTick.
-        Use sparingly to avoid rate limits.
+        Fetch fresh data from TickTick.
+        
+        Unlike the old ticktick-py approach, this doesn't populate a cache.
+        It just returns the fresh data. Use get_all_tasks() etc. instead.
+        
+        Returns:
+            Raw response from batch/check endpoint
         """
-        if not self._ticktick_client:
-            raise RuntimeError("Client not initialized")
-        self._ticktick_client.sync()
-        logger.info("Synced data from TickTick")
-
+        return self._fetch_batch_check()
+    
     def get_all_tasks(self) -> list[dict]:
-        """Get all tasks from cached state."""
-        if not self._ticktick_client:
-            raise RuntimeError("Client not initialized")
-        state = self._ticktick_client.state
-        tasks = state.get("tasks", {})
-        # Handle both dict and list formats
-        if isinstance(tasks, dict):
-            return list(tasks.values())
-        return tasks if isinstance(tasks, list) else []
-
+        """
+        Get all tasks - FRESH from API, no caching.
+        
+        Returns:
+            List of task dicts
+        """
+        data = self._fetch_batch_check()
+        tasks = data.get("syncTaskBean", {}).get("update", [])
+        logger.debug(f"Fetched {len(tasks)} tasks (fresh)")
+        return tasks
+    
     def get_all_projects(self) -> list[dict]:
-        """Get all projects from cached state."""
-        if not self._ticktick_client:
-            raise RuntimeError("Client not initialized")
-        state = self._ticktick_client.state
-        projects = state.get("projects", {})
-        if isinstance(projects, dict):
-            return list(projects.values())
-        return projects if isinstance(projects, list) else []
-
+        """
+        Get all projects - FRESH from API, no caching.
+        
+        Returns:
+            List of project dicts
+        """
+        data = self._fetch_batch_check()
+        projects = data.get("projectProfiles", [])
+        logger.debug(f"Fetched {len(projects)} projects (fresh)")
+        return projects
+    
     def get_all_tags(self) -> list[dict]:
-        """Get all tags from cached state."""
-        if not self._ticktick_client:
-            raise RuntimeError("Client not initialized")
-        state = self._ticktick_client.state
-        tags = state.get("tags", {})
-        if isinstance(tags, dict):
-            return list(tags.values())
-        return tags if isinstance(tags, list) else []
-
+        """
+        Get all tags - FRESH from API, no caching.
+        
+        Returns:
+            List of tag dicts
+        """
+        data = self._fetch_batch_check()
+        tags = data.get("tags", [])
+        logger.debug(f"Fetched {len(tags)} tags (fresh)")
+        return tags
+    
     def get_task_by_id(self, task_id: str) -> Optional[dict]:
-        """Get a specific task by ID from cached state."""
-        if not self._ticktick_client:
-            raise RuntimeError("Client not initialized")
-        # Use ticktick-py's get_by_id method
-        return self._ticktick_client.get_by_id(task_id)
-
+        """
+        Get a specific task by ID - FRESH from API.
+        
+        Args:
+            task_id: The task ID
+            
+        Returns:
+            Task dict or None if not found
+        """
+        tasks = self.get_all_tasks()
+        for task in tasks:
+            if task.get("id") == task_id:
+                return task
+        return None
+    
     def get_project_by_id(self, project_id: str) -> Optional[dict]:
-        """Get a specific project by ID from cached state."""
-        if not self._ticktick_client:
-            raise RuntimeError("Client not initialized")
-        return self._ticktick_client.get_by_id(project_id)
-
+        """
+        Get a specific project by ID - FRESH from API.
+        
+        Args:
+            project_id: The project ID
+            
+        Returns:
+            Project dict or None if not found
+        """
+        projects = self.get_all_projects()
+        for project in projects:
+            if project.get("id") == project_id:
+                return project
+        return None
+    
     def get_tasks_from_project(self, project_id: str, status: int = 0) -> list[dict]:
         """
-        Get tasks from a specific project.
-
+        Get tasks from a specific project - FRESH from API.
+        
         Args:
             project_id: The project ID
             status: 0=uncompleted, 2=completed (default: 0)
+            
+        Returns:
+            List of matching task dicts
         """
-        if not self._ticktick_client:
-            raise RuntimeError("Client not initialized")
-        return self._ticktick_client.get_by_fields(
-            search="tasks",
-            projectId=project_id,
-            status=status
-        )
-
+        tasks = self.get_all_tasks()
+        return [
+            t for t in tasks
+            if t.get("projectId") == project_id and t.get("status") == status
+        ]
+    
     # ==================== Task CRUD Operations ====================
-
+    
     def create_task(
         self,
         title: str,
@@ -180,7 +362,7 @@ class UnofficialAPIClient:
     ) -> dict:
         """
         Create a new task.
-
+        
         Args:
             title: Task title
             project_id: Project ID
@@ -190,16 +372,13 @@ class UnofficialAPIClient:
             priority: 0=None, 1=Low, 3=Medium, 5=High
             tags: List of tag names
             **kwargs: Additional task fields
-
+            
         Returns:
             Created task data
         """
-        import uuid
-        from datetime import datetime, timezone
-
-        task_id = str(uuid.uuid4()).replace("-", "")[:24]
+        task_id = uuid.uuid4().hex[:24]
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-
+        
         task = {
             "id": task_id,
             "projectId": project_id,
@@ -210,7 +389,7 @@ class UnofficialAPIClient:
             "modifiedTime": now,
             **kwargs
         }
-
+        
         if content:
             task["content"] = content
         if start_date:
@@ -219,48 +398,47 @@ class UnofficialAPIClient:
             task["dueDate"] = due_date
         if tags:
             task["tags"] = tags
-
+        
         url = "https://api.ticktick.com/api/v2/batch/task"
         payload = {
             "add": [task],
             "update": [],
             "delete": []
         }
-
-        response = self.session.post(url, json=payload)
-
+        
+        response = self.client.post(url, json=payload)
+        
         if response.status_code == 200:
             result = response.json()
-            # Return the created task from the response or our constructed task
             id_map = result.get("id2etag", {})
             if task_id in id_map:
                 task["etag"] = id_map[task_id]
             return task
         else:
             raise RuntimeError(f"Create task failed {response.status_code}: {response.text[:200]}")
-
+    
     def update_task(self, task: dict) -> dict:
         """
         Update an existing task.
-
+        
         Args:
             task: Task dict with 'id' and 'projectId' plus fields to update
-
+            
         Returns:
             Updated task data
         """
         if "id" not in task or "projectId" not in task:
             raise ValueError("Task must have 'id' and 'projectId'")
-
+        
         url = "https://api.ticktick.com/api/v2/batch/task"
         payload = {
             "add": [],
             "update": [task],
             "delete": []
         }
-
-        response = self.session.post(url, json=payload)
-
+        
+        response = self.client.post(url, json=payload)
+        
         if response.status_code == 200:
             result = response.json()
             id_map = result.get("id2etag", {})
@@ -269,15 +447,15 @@ class UnofficialAPIClient:
             return task
         else:
             raise RuntimeError(f"Update task failed {response.status_code}: {response.text[:200]}")
-
+    
     def delete_task(self, task_id: str, project_id: str) -> bool:
         """
         Delete a task.
-
+        
         Args:
             task_id: The task ID
             project_id: The project ID containing the task
-
+            
         Returns:
             True if successful
         """
@@ -287,145 +465,132 @@ class UnofficialAPIClient:
             "update": [],
             "delete": [{"taskId": task_id, "projectId": project_id}]
         }
-
-        response = self.session.post(url, json=payload)
-
+        
+        response = self.client.post(url, json=payload)
+        
         if response.status_code == 200:
             return True
         else:
             raise RuntimeError(f"Delete task failed {response.status_code}: {response.text[:200]}")
-
+    
     def complete_task(self, task_id: str, project_id: str) -> bool:
         """
         Mark a task as complete.
-
+        
         Args:
             task_id: The task ID
             project_id: The project ID containing the task
-
+            
         Returns:
             True if successful
         """
         url = f"https://api.ticktick.com/api/v2/project/{project_id}/task/{task_id}/complete"
-        response = self.session.post(url)
-
+        response = self.client.post(url)
+        
         if response.status_code == 200:
             return True
         else:
             raise RuntimeError(f"Complete task failed {response.status_code}: {response.text[:200]}")
-
+    
     def move_task(self, task_id: str, from_project_id: str, to_project_id: str) -> dict:
         """
         Move a task to a different project.
-
+        
         Args:
             task_id: The task ID
             from_project_id: Current project ID
             to_project_id: Destination project ID
-
+            
         Returns:
             Updated task data
         """
-        # First get the task
+        # Get fresh task data
         task = self.get_task_by_id(task_id)
         if not task:
             raise RuntimeError(f"Task not found: {task_id}")
-
+        
         # Update the projectId
         task["projectId"] = to_project_id
-
-        # Use the batch endpoint to move
-        url = "https://api.ticktick.com/api/v2/batch/task"
-        payload = {
-            "add": [],
-            "update": [task],
-            "delete": []
-        }
-
-        response = self.session.post(url, json=payload)
-
-        if response.status_code == 200:
-            return task
-        else:
-            raise RuntimeError(f"Move task failed {response.status_code}: {response.text[:200]}")
-
+        
+        return self.update_task(task)
+    
     def make_subtask(self, child_task_id: str, parent_task_id: str) -> dict:
         """
         Make one task a subtask of another.
-
+        
         Both tasks must be in the same project.
-
+        
         Args:
             child_task_id: The task ID to become a subtask
             parent_task_id: The parent task ID
-
+            
         Returns:
-            Updated parent task
+            Updated child task
         """
-        # Get both tasks
+        # Get fresh data for both tasks
         child = self.get_task_by_id(child_task_id)
         parent = self.get_task_by_id(parent_task_id)
-
+        
         if not child:
             raise RuntimeError(f"Child task not found: {child_task_id}")
         if not parent:
             raise RuntimeError(f"Parent task not found: {parent_task_id}")
-
+        
         if child.get("projectId") != parent.get("projectId"):
             raise RuntimeError("Tasks must be in the same project")
-
+        
         # Set parent relationship
         child["parentId"] = parent_task_id
-
+        
         return self.update_task(child)
-
+    
     # ==================== Special Operations ====================
-
+    
     def get_task_activity(self, task_id: str, skip: int = 0) -> list:
         """
         Get task activity log.
-
+        
         Args:
             task_id: The task ID
             skip: Number of entries to skip (pagination)
-
+            
         Returns:
             List of activity entries
         """
         url = f"https://api.ticktick.com/api/v1/task/activity/{task_id}"
         params = {"skip": skip} if skip > 0 else None
-
-        response = self.session.get(url, params=params)
-
+        
+        response = self.client.get(url, params=params)
+        
         if response.status_code == 200:
             return response.json()
         else:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
-
+    
     def pin_task(self, task_id: str) -> None:
         """Pin a task to the top of the list."""
         url = "https://api.ticktick.com/api/v2/batch/taskPin"
         payload = {"add": [task_id]}
-
-        response = self.session.post(url, json=payload)
-
+        
+        response = self.client.post(url, json=payload)
+        
         if response.status_code != 200:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
-
+    
     def unpin_task(self, task_id: str) -> None:
         """Unpin a task."""
         url = "https://api.ticktick.com/api/v2/batch/taskPin"
         payload = {"delete": [task_id]}
-
-        response = self.session.post(url, json=payload)
-
+        
+        response = self.client.post(url, json=payload)
+        
         if response.status_code != 200:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
-
+    
     def set_repeat_from(self, task_id: str, project_id: str, repeat_from: str) -> None:
         """
         Set whether a repeating task repeats from due date or completion date.
-
+        
         Args:
             task_id: The task ID
             project_id: The project ID
@@ -437,30 +602,14 @@ class UnofficialAPIClient:
             "projectId": project_id,
             "repeatFrom": repeat_from
         }
-
-        response = self.session.post(url, json=payload)
-
+        
+        response = self.client.post(url, json=payload)
+        
         if response.status_code != 200:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
 
 
-# ==================== Backwards Compatibility ====================
-# Keep the old singleton class for any code that still references it
-
-class TickTickClientSingleton:
-    """Legacy compatibility wrapper. Use UnofficialAPIClient instead."""
-
-    @classmethod
-    def get_client(cls):
-        """Returns the ticktick-py client for legacy code."""
-        instance = UnofficialAPIClient.get_instance()
-        if instance and instance._ticktick_client:
-            return instance._ticktick_client
-        return None
-
-
 # ==================== Module-level convenience functions ====================
-# These maintain backwards compatibility with existing tool code
 
 def get_client() -> Optional[UnofficialAPIClient]:
     """Get the unofficial API client instance."""

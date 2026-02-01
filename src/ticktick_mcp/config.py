@@ -2,7 +2,7 @@
 Configuration for TickTick MCP Server.
 Handles dual-client authentication:
 1. Official API (OAuth) - via ticktick_client.py
-2. Unofficial API (ticktick-py) - via unofficial_client.py
+2. Unofficial API (direct v2 calls, no caching) - via unofficial_client.py
 """
 
 import argparse

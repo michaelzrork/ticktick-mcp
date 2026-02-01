@@ -6,6 +6,7 @@ These tools use direct API calls to unofficial v2 endpoints:
 - Set repeatFrom (repeat from due date vs completion date)
 - Task activity logs
 - Full CRUD operations via unofficial API
+- Fresh data fetches (no caching!)
 
 Requires TICKTICK_USERNAME and TICKTICK_PASSWORD environment variables.
 """
@@ -153,37 +154,29 @@ def ticktick_set_repeat_from(
         return {"error": str(e)}
 
 
-# ==================== Data Fetch Tools (Direct API) ====================
+# ==================== Data Fetch Tools (FRESH - NO CACHE) ====================
 
 
 @mcp.tool()
-def ticktick_sync_and_get_all(force_refresh: bool = False) -> dict[str, Any]:
+def ticktick_unofficial_get_all() -> dict[str, Any]:
     """
     Get all data from TickTick via the unofficial API.
 
-    By default uses cached data from server startup. Set force_refresh=True
-    to fetch fresh data (use sparingly to avoid rate limits).
-
-    Args:
-        force_refresh: If True, sync fresh data before returning (default: False)
+    ALWAYS returns fresh data - no caching. Each call fetches from the API.
 
     Returns:
         Dict with tasks, projects, tags counts and data
     """
-    logger.info(f"ticktick_sync_and_get_all called (force_refresh={force_refresh})")
+    logger.info("ticktick_unofficial_get_all called")
 
     try:
         client = _get_api_client()
-
-        if force_refresh:
-            client.sync()
-            logger.info("Forced sync completed")
 
         tasks = client.get_all_tasks()
         projects = client.get_all_projects()
         tags = client.get_all_tags()
 
-        logger.info(f"Retrieved {len(tasks)} tasks, {len(projects)} projects, {len(tags)} tags")
+        logger.info(f"Retrieved {len(tasks)} tasks, {len(projects)} projects, {len(tags)} tags (fresh)")
 
         return {
             "success": True,
@@ -204,7 +197,7 @@ def ticktick_get_by_id(obj_id: str) -> dict[str, Any]:
     """
     Get any TickTick object by its ID via the unofficial API.
 
-    Uses cached data from server startup (fast, no API call).
+    ALWAYS returns fresh data - no caching.
     Searches through tasks, then projects to find the object.
 
     Args:
@@ -244,7 +237,7 @@ def ticktick_get_all(
     """
     Get all objects of a specific type via the unofficial API.
 
-    Uses cached data from server startup (fast, no API call).
+    ALWAYS returns fresh data - no caching.
 
     Args:
         obj_type: Type of objects to retrieve - "tasks", "projects", or "tags"
@@ -266,7 +259,7 @@ def ticktick_get_all(
         else:
             return {"error": f"Unknown object type: {obj_type}"}
 
-        logger.info(f"Retrieved {len(result)} {obj_type}")
+        logger.info(f"Retrieved {len(result)} {obj_type} (fresh)")
         return result
     except Exception as e:
         logger.error(f"Failed to get all {obj_type}: {e}")
@@ -281,7 +274,7 @@ def ticktick_get_tasks_from_project(
     """
     Get tasks from a specific project via the unofficial API.
 
-    Uses cached data from server startup (fast, no API call).
+    ALWAYS returns fresh data - no caching.
 
     Args:
         project_id: The project ID to get tasks from
@@ -303,7 +296,7 @@ def ticktick_get_tasks_from_project(
             completed = client.get_tasks_from_project(project_id, status=2)
             tasks.extend(completed)
 
-        logger.info(f"Retrieved {len(tasks)} tasks from project {project_id}")
+        logger.info(f"Retrieved {len(tasks)} tasks from project {project_id} (fresh)")
         return tasks
     except Exception as e:
         logger.error(f"Failed to get tasks from project: {e}")
@@ -388,7 +381,7 @@ def ticktick_unofficial_update_task(
     try:
         client = _get_api_client()
 
-        # Get the task first
+        # Get the task first (fresh from API)
         task = client.get_task_by_id(task_id)
         if not task:
             return {"error": f"Task not found: {task_id}"}
@@ -432,7 +425,7 @@ def ticktick_unofficial_delete_task(task_id: str) -> dict[str, Any]:
     try:
         client = _get_api_client()
 
-        # Get the task first to find its project
+        # Get the task first to find its project (fresh from API)
         task = client.get_task_by_id(task_id)
         if not task:
             return {"error": f"Task not found: {task_id}"}
@@ -465,7 +458,7 @@ def ticktick_unofficial_complete_task(task_id: str) -> dict[str, Any]:
     try:
         client = _get_api_client()
 
-        # Get the task first to find its project
+        # Get the task first to find its project (fresh from API)
         task = client.get_task_by_id(task_id)
         if not task:
             return {"error": f"Task not found: {task_id}"}
@@ -499,7 +492,7 @@ def ticktick_unofficial_move_task(task_id: str, to_project_id: str) -> dict[str,
     try:
         client = _get_api_client()
 
-        # Get the task first
+        # Get the task first (fresh from API)
         task = client.get_task_by_id(task_id)
         if not task:
             return {"error": f"Task not found: {task_id}"}
@@ -555,19 +548,19 @@ def ticktick_unofficial_make_subtask(child_task_id: str, parent_task_id: str) ->
 
 @mcp.tool()
 def legacy_ticktick_get_by_id(obj_id: str) -> dict[str, Any]:
-    """Alias for ticktick_get_by_id. Get any object by ID."""
+    """Alias for ticktick_get_by_id. Get any object by ID (fresh from API)."""
     return ticktick_get_by_id(obj_id)
 
 
 @mcp.tool()
 def legacy_ticktick_get_all(obj_type: Literal["tasks", "projects", "tags"]) -> dict[str, Any] | list[dict]:
-    """Alias for ticktick_get_all. Get all objects of a type."""
+    """Alias for ticktick_get_all. Get all objects of a type (fresh from API)."""
     return ticktick_get_all(obj_type)
 
 
 @mcp.tool()
 def legacy_ticktick_get_tasks_from_project(project_id: str) -> dict[str, Any] | list[dict]:
-    """Alias for ticktick_get_tasks_from_project. Get tasks from a project."""
+    """Alias for ticktick_get_tasks_from_project. Get tasks from a project (fresh from API)."""
     return ticktick_get_tasks_from_project(project_id, include_completed=False)
 
 
