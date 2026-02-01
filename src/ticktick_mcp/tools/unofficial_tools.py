@@ -5,16 +5,18 @@ These tools use the unofficial v2 API for features not available in OpenAPI v1:
 - Pin/unpin tasks
 - Set repeatFrom (repeat from due date vs completion date)
 - Task activity logs
+- Legacy get tools using ticktick-py's state sync
 
 Requires TICKTICK_USERNAME and TICKTICK_PASSWORD environment variables.
 """
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from ticktick_mcp.mcp_instance import mcp
 from ticktick_mcp import config
 from ticktick_mcp import unofficial_client
+from ticktick_mcp.unofficial_client import TickTickClientSingleton
 
 logger = logging.getLogger(__name__)
 
@@ -155,4 +157,112 @@ def ticktick_set_repeat_from(
         return {"success": True, "message": f"Task {task_id} set to repeat from {repeat_from}"}
     except Exception as e:
         logger.error(f"Failed to set repeat_from: {e}")
+        return {"error": str(e)}
+
+
+# ==================== Legacy Get Tools ====================
+# These tools use ticktick-py's state sync for retrieving objects
+
+
+@mcp.tool()
+def legacy_ticktick_get_by_id(obj_id: str) -> dict[str, Any]:
+    """
+    Get any TickTick object by its ID using the legacy ticktick-py client.
+
+    This searches through all synced state (tasks, projects, tags) to find
+    the object with the matching ID.
+
+    Args:
+        obj_id: The ID of the object to retrieve
+
+    Returns:
+        The object if found, or error dict
+    """
+    logger.info(f"legacy_ticktick_get_by_id called for: {obj_id}")
+
+    client = TickTickClientSingleton.get_client()
+    if not client:
+        logger.warning("Unofficial client not available")
+        return {"error": "Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD."}
+
+    try:
+        result = client.get_by_id(obj_id)
+        if result:
+            logger.info(f"Found object with ID: {obj_id}")
+            return result
+        else:
+            logger.info(f"No object found with ID: {obj_id}")
+            return {"error": f"No object found with ID: {obj_id}"}
+    except Exception as e:
+        logger.error(f"Failed to get object by ID: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def legacy_ticktick_get_all(
+    obj_type: Literal["tasks", "projects", "tags"]
+) -> dict[str, Any] | list[dict]:
+    """
+    Get all objects of a specific type using the legacy ticktick-py client.
+
+    This returns all synced objects from ticktick-py's state.
+
+    Args:
+        obj_type: Type of objects to retrieve - "tasks", "projects", or "tags"
+
+    Returns:
+        List of objects or error dict
+    """
+    logger.info(f"legacy_ticktick_get_all called for type: {obj_type}")
+
+    client = TickTickClientSingleton.get_client()
+    if not client:
+        logger.warning("Unofficial client not available")
+        return {"error": "Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD."}
+
+    try:
+        if obj_type == "tasks":
+            result = list(client.state["tasks"].values())
+        elif obj_type == "projects":
+            result = list(client.state["projects"].values())
+        elif obj_type == "tags":
+            result = list(client.state["tags"].values())
+        else:
+            return {"error": f"Unknown object type: {obj_type}"}
+
+        logger.info(f"Retrieved {len(result)} {obj_type}")
+        return result
+    except Exception as e:
+        logger.error(f"Failed to get all {obj_type}: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def legacy_ticktick_get_tasks_from_project(project_id: str) -> dict[str, Any] | list[dict]:
+    """
+    Get all uncompleted tasks from a specific project using the legacy ticktick-py client.
+
+    Args:
+        project_id: The project ID to get tasks from
+
+    Returns:
+        List of tasks or error dict
+    """
+    logger.info(f"legacy_ticktick_get_tasks_from_project called for project: {project_id}")
+
+    client = TickTickClientSingleton.get_client()
+    if not client:
+        logger.warning("Unofficial client not available")
+        return {"error": "Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD."}
+
+    try:
+        tasks = client.get_by_fields(
+            search="tasks",
+            projectId=project_id,
+            status=0  # 0 = uncompleted
+        )
+        logger.info(f"Retrieved {len(tasks)} tasks from project {project_id}")
+        return tasks
+    except Exception as e:
+        logger.error(f"Failed to get tasks from project: {e}")
         return {"error": str(e)}
