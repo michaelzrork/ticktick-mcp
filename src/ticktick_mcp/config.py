@@ -1,11 +1,9 @@
 """
 Configuration for TickTick MCP Server.
 Handles dual-client authentication:
-1. Official API (OAuth)
-2. Unofficial API (Username/Password + Token Cache)
+1. Official API (OAuth) - via ticktick_client.py
+2. Unofficial API (ticktick-py) - via unofficial_client.py
 """
-
-from __future__ import annotations
 
 import argparse
 import json
@@ -14,16 +12,8 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
-
-from ticktick_mcp.ticktick_client import init_ticktick_client, TickTickClient
-from ticktick_mcp.unofficial_client import (
-    TickTickUnofficialClient,
-    init_unofficial_client,
-    get_unofficial_client as _get_unofficial_client
-)
 
 # Setup logging
 logging.basicConfig(
@@ -33,7 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Initial Argument Parsing ---
+# --- Argument Parsing ---
 parser = argparse.ArgumentParser(description="TickTick MCP server configuration.")
 parser.add_argument(
     "--dotenv-dir",
@@ -43,154 +33,127 @@ parser.add_argument(
 )
 args, _ = parser.parse_known_args()
 
-# Base configuration directory
-CONFIG_DIR = Path(args.dotenv_dir).expanduser()
+# --- Check environment variables (e.g., from Railway) ---
+CLIENT_ID = os.getenv("TICKTICK_CLIENT_ID")
+CLIENT_SECRET = os.getenv("TICKTICK_CLIENT_SECRET")
+REDIRECT_URI = os.getenv("TICKTICK_REDIRECT_URI")
+USERNAME = os.getenv("TICKTICK_USERNAME")
+PASSWORD = os.getenv("TICKTICK_PASSWORD")
+ACCESS_TOKEN = os.getenv("TICKTICK_ACCESS_TOKEN")
+USER_ID = os.getenv("TICKTICK_USER_ID")
 
-# --- Module Globals ---
-CLIENT_ID: str | None = None
-CLIENT_SECRET: str | None = None
-REDIRECT_URI: str | None = None
-ACCESS_TOKEN: str | None = None
-USER_ID: str | None = None
-USERNAME: str | None = None
-PASSWORD: str | None = None
+# --- Load from .env file if not all vars are set ---
+if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
+    logger.info("Environment variables not fully set, loading from .env file...")
 
-IS_CLOUD_DEPLOYMENT: bool = False
-UNOFFICIAL_TOKEN_CACHE_PATH: Path = CONFIG_DIR / ".token-oauth"
-_unofficial_client_initialized: bool = False
+    dotenv_dir_path = Path(args.dotenv_dir).expanduser()
 
+    try:
+        dotenv_dir_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Ensured directory exists: {dotenv_dir_path}")
+    except OSError as e:
+        logger.error(f"Error creating directory {dotenv_dir_path}: {e}")
+        sys.exit(1)
 
-def _load_env_vars() -> None:
-    """
-    Logic: 
-    1. Check Shell/Cloud Env vars first.
-    2. Fallback to .env if local.
-    3. If Cloud detected via TICKTICK_OAUTH_TOKEN, reroute unofficial cache to /tmp.
-    """
-    global CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, ACCESS_TOKEN, USER_ID
-    global USERNAME, PASSWORD, IS_CLOUD_DEPLOYMENT, UNOFFICIAL_TOKEN_CACHE_PATH
+    dotenv_path = dotenv_dir_path / ".env"
 
-    # 1. Grab what is currently in the environment
+    if not dotenv_path.is_file():
+        logger.error(f"Required .env file not found at {dotenv_path}")
+        logger.error("Please create the .env file with your TickTick credentials.")
+        sys.exit(1)
+
+    loaded = load_dotenv(override=True, dotenv_path=dotenv_path)
+    if loaded:
+        logger.info(f"Loaded environment from: {dotenv_path}")
+    else:
+        logger.error(f"Failed to load from {dotenv_path}")
+        sys.exit(1)
+
+    # Reload variables after dotenv
     CLIENT_ID = os.getenv("TICKTICK_CLIENT_ID")
     CLIENT_SECRET = os.getenv("TICKTICK_CLIENT_SECRET")
     REDIRECT_URI = os.getenv("TICKTICK_REDIRECT_URI")
     USERNAME = os.getenv("TICKTICK_USERNAME")
     PASSWORD = os.getenv("TICKTICK_PASSWORD")
-    ACCESS_TOKEN = os.getenv("TICKTICK_ACCESS_TOKEN")
+    if not ACCESS_TOKEN:
+        ACCESS_TOKEN = os.getenv("TICKTICK_ACCESS_TOKEN")
+    if not USER_ID:
+        USER_ID = os.getenv("TICKTICK_USER_ID")
+else:
+    logger.info("Using environment variables provided by hosting platform")
 
-    # 2. Local Fallback: Load .env if official credentials missing
-    if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI]):
-        dotenv_path = CONFIG_DIR / ".env"
-        if dotenv_path.is_file():
-            logger.info(f"Loading environment from {dotenv_path}")
-            load_dotenv(override=True, dotenv_path=dotenv_path)
-            # Re-read
-            CLIENT_ID = os.getenv("TICKTICK_CLIENT_ID")
-            CLIENT_SECRET = os.getenv("TICKTICK_CLIENT_SECRET")
-            REDIRECT_URI = os.getenv("TICKTICK_REDIRECT_URI")
-            USERNAME = os.getenv("TICKTICK_USERNAME")
-            PASSWORD = os.getenv("TICKTICK_PASSWORD")
-            if not ACCESS_TOKEN:
-                ACCESS_TOKEN = os.getenv("TICKTICK_ACCESS_TOKEN")
+# Final validation
+if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
+    logger.error("Missing required environment variables")
+    sys.exit(1)
 
-    # 3. Cloud Detection & Unofficial Cache Rerouting
-    # This matches your original logic: Only the unofficial cache needs /tmp in cloud.
-    oauth_token_json = os.getenv("TICKTICK_OAUTH_TOKEN")
-    
-    if oauth_token_json:
-        IS_CLOUD_DEPLOYMENT = True
-        UNOFFICIAL_TOKEN_CACHE_PATH = Path("/tmp") / ".token-oauth"
-        logger.info(f"Cloud detected. Rerouting unofficial cache to: {UNOFFICIAL_TOKEN_CACHE_PATH}")
+# --- Set dotenv_dir_path for token cache ---
+# Use /tmp for cloud deployment (writable), otherwise use config dir for local
+oauth_token_env = os.getenv("TICKTICK_OAUTH_TOKEN")
+if oauth_token_env:
+    # Cloud deployment - write token to /tmp cache
+    logger.info("Cloud deployment detected (TICKTICK_OAUTH_TOKEN set)")
+    dotenv_dir_path = Path("/tmp")
+    token_path = dotenv_dir_path / ".token-oauth"
 
-        try:
-            token_data = json.loads(oauth_token_json)
-            # Inject expire_time for ticktick-py compatibility
-            token_data['expire_time'] = int(time.time()) + token_data.get('expires_in', 15551999)
-            
-            # Write to /tmp so the unofficial client can authenticate
-            UNOFFICIAL_TOKEN_CACHE_PATH.write_text(json.dumps(token_data))
-            
-            # Sync the access token for the official client if not already set
-            if not ACCESS_TOKEN:
-                ACCESS_TOKEN = token_data.get("access_token")
-        except (json.JSONDecodeError, IOError) as e:
-            logger.error(f"Failed to setup cloud cache for unofficial client: {e}")
-    else:
-        # Local mode: unofficial cache stays in config dir
-        UNOFFICIAL_TOKEN_CACHE_PATH = CONFIG_DIR / ".token-oauth"
+    # Parse token and add expire_time field for ticktick-py compatibility
+    token_data = json.loads(oauth_token_env)
+    current_time = int(time.time())
+    token_data['expire_time'] = current_time + token_data.get('expires_in', 15551999)
 
-    USER_ID = os.getenv("TICKTICK_USER_ID")
+    # Write corrected token to cache
+    token_path.write_text(json.dumps(token_data))
+    logger.info(f"Wrote OAuth token to: {token_path}")
 
-    # Final Validation for Official Client
-    if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI]):
-        logger.error("Missing required OAuth credentials (CLIENT_ID, CLIENT_SECRET, REDIRECT_URI)")
-        sys.exit(1)
+    # Also set ACCESS_TOKEN for official API if not already set
+    if not ACCESS_TOKEN:
+        ACCESS_TOKEN = token_data.get("access_token")
+else:
+    # Local mode - use config dir
+    dotenv_dir_path = Path(args.dotenv_dir).expanduser()
+    logger.info(f"Local mode, token cache dir: {dotenv_dir_path}")
 
 
-def _save_token_cache(access_token: str, refresh_token: str | None = None, expires_in: int | None = None) -> None:
-    """Saves official OAuth token to local cache."""
-    token_file = CONFIG_DIR / ".token-cache.json"
+# --- Official API Client Functions ---
+# These use the separate ticktick_client.py which uses httpx for the official OpenAPI
+
+def get_ticktick_client():
+    """Returns the official API client. Returns None if ACCESS_TOKEN is missing."""
+    if not ACCESS_TOKEN:
+        return None
+    from ticktick_mcp.ticktick_client import init_ticktick_client
+    return init_ticktick_client(access_token=ACCESS_TOKEN, user_id=USER_ID)
+
+
+def save_tokens(access_token: str, refresh_token: str = None, expires_in: int = None):
+    """Called after successful OAuth callback to save tokens."""
+    global ACCESS_TOKEN
+    ACCESS_TOKEN = access_token
+
+    # Save to local cache file
+    token_file = dotenv_dir_path / ".token-cache.json"
     token_data = {"access_token": access_token}
-    if refresh_token: token_data["refresh_token"] = refresh_token
+    if refresh_token:
+        token_data["refresh_token"] = refresh_token
     if expires_in:
         token_data["expires_in"] = str(expires_in)
         token_data["expire_time"] = str(int(time.time()) + expires_in)
 
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        dotenv_dir_path.mkdir(parents=True, exist_ok=True)
         token_file.write_text(json.dumps(token_data, indent=2))
         logger.info(f"Saved official token to: {token_file}")
     except IOError as e:
-        logger.warning(f"Failed to save official token cache: {e}")
+        logger.warning(f"Failed to save token cache: {e}")
 
-
-# Initialize vars immediately on import
-_load_env_vars()
-
-
-def get_ticktick_client() -> TickTickClient | None:
-    """Returns official client. Returns None if ACCESS_TOKEN is missing."""
-    if not ACCESS_TOKEN:
-        return None
-    return init_ticktick_client(access_token=ACCESS_TOKEN, user_id=USER_ID)
-
-
-def save_tokens(access_token: str, refresh_token: str | None = None, expires_in: int | None = None) -> None:
-    """Called after successful OAuth callback."""
-    global ACCESS_TOKEN
-    ACCESS_TOKEN = access_token
-    _save_token_cache(access_token, refresh_token, expires_in)
+    from ticktick_mcp.ticktick_client import init_ticktick_client
     init_ticktick_client(access_token=access_token, user_id=USER_ID)
 
 
-async def get_unofficial_client() -> TickTickUnofficialClient | None:
-    """Lazy initialization of the unofficial client using the calculated cache path."""
-    global _unofficial_client_initialized
+# --- Unofficial API Client Function ---
+# This uses the unofficial_client.py which wraps ticktick-py
 
-    if not USERNAME or not PASSWORD:
-        logger.info("Unofficial credentials not set; skipping unofficial client.")
-        return None
-
-    # Check for existing singleton
-    existing = _get_unofficial_client()
-    if existing and existing.is_authenticated:
-        return existing
-
-    if not _unofficial_client_initialized:
-        try:
-            client = await init_unofficial_client(
-                username=USERNAME,
-                password=PASSWORD,
-                client_id=CLIENT_ID,
-                client_secret=CLIENT_SECRET,
-                redirect_uri=REDIRECT_URI,
-                access_token=ACCESS_TOKEN,
-                token_cache_path=UNOFFICIAL_TOKEN_CACHE_PATH
-            )
-            _unofficial_client_initialized = True
-            return client
-        except Exception as e:
-            logger.error(f"Unofficial client login failed: {e}")
-            return None
-
-    return _get_unofficial_client()
+def get_unofficial_client():
+    """Returns the unofficial API client (ticktick-py singleton)."""
+    from ticktick_mcp.unofficial_client import TickTickClientSingleton
+    return TickTickClientSingleton.get_client()
