@@ -264,6 +264,7 @@ async def get_unofficial_client() -> TickTickUnofficialClient | None:
                 client_id=CLIENT_ID,
                 client_secret=CLIENT_SECRET,
                 redirect_uri=REDIRECT_URI,
+                access_token=ACCESS_TOKEN,
                 token_cache_path=CONFIG_DIR / ".token-oauth"
             )
             _unofficial_client_initialized = True

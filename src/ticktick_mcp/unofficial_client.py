@@ -10,7 +10,9 @@ Uses ticktick-py library for authentication (which works reliably).
 """
 
 import asyncio
+import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional, Any
 
@@ -49,6 +51,7 @@ class TickTickUnofficialClient:
         client_id: str,
         client_secret: str,
         redirect_uri: str,
+        access_token: Optional[str] = None,
         token_cache_path: Optional[Path] = None
     ):
         """
@@ -58,18 +61,49 @@ class TickTickUnofficialClient:
             client_id: OAuth client ID
             client_secret: OAuth client secret
             redirect_uri: OAuth redirect URI
+            access_token: Pre-obtained OAuth access token (for cloud deployment)
             token_cache_path: Path to cache OAuth tokens (optional)
         """
         self._client_id = client_id
         self._client_secret = client_secret
         self._redirect_uri = redirect_uri
+        self._access_token = access_token
         self._token_cache_path = token_cache_path or Path.home() / ".config" / "ticktick-mcp" / ".token-oauth"
         self._ticktick_client: Optional[TickTickClient] = None
+
+        # Pre-populate the cache file if access_token is provided
+        # This prevents ticktick-py from triggering interactive OAuth flow
+        if access_token:
+            self._write_token_cache(access_token)
 
     @property
     def is_authenticated(self) -> bool:
         """Check if the client is authenticated."""
         return self._ticktick_client is not None
+
+    def _write_token_cache(self, access_token: str) -> None:
+        """
+        Write the OAuth token to cache file for ticktick-py to use.
+
+        This prevents the interactive OAuth flow from triggering.
+        """
+        try:
+            cache_path = Path(self._token_cache_path)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Token format expected by ticktick-py
+            token_info = {
+                "access_token": access_token,
+                "token_type": "bearer",
+                "expires_in": 15552000,  # ~6 months
+                "scope": "tasks:read tasks:write",
+                "expire_time": int(time.time()) + 15552000,
+            }
+
+            cache_path.write_text(json.dumps(token_info))
+            logger.info(f"Wrote OAuth token to cache: {cache_path}")
+        except Exception as e:
+            logger.warning(f"Failed to write token cache: {e}")
 
     def _create_oauth(self) -> OAuth2:
         """Create the OAuth2 session object."""
@@ -363,6 +397,7 @@ async def init_unofficial_client(
     client_id: str,
     client_secret: str,
     redirect_uri: str,
+    access_token: Optional[str] = None,
     token_cache_path: Optional[Path] = None
 ) -> TickTickUnofficialClient:
     """
@@ -374,6 +409,7 @@ async def init_unofficial_client(
         client_id: OAuth client ID
         client_secret: OAuth client secret
         redirect_uri: OAuth redirect URI
+        access_token: Pre-obtained OAuth access token (for cloud deployment)
         token_cache_path: Path to cache OAuth tokens (optional)
 
     Returns:
@@ -383,6 +419,7 @@ async def init_unofficial_client(
     _unofficial_client = TickTickUnofficialClient(
         client_id=client_id,
         client_secret=client_secret,
+        access_token=access_token,
         redirect_uri=redirect_uri,
         token_cache_path=token_cache_path
     )
