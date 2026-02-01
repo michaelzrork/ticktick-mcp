@@ -2,13 +2,12 @@
 TickTick Unofficial API Client.
 
 Direct API access without ticktick-py dependency.
-Handles its own OAuth2 authentication and makes fresh API calls for all reads.
+Handles authentication via username/password login and makes fresh API calls for all reads.
 NO CACHING - every read fetches fresh data from the API.
 
 This eliminates the stale cache problem that plagued the ticktick-py approach.
 """
 
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -30,33 +29,24 @@ class UnofficialAPIClient:
     
     Key differences from the old ticktick-py based approach:
     - No caching: Every read makes a fresh API call
-    - Self-contained OAuth2: No ticktick-py dependency
+    - Self-contained auth: No ticktick-py dependency
     - Fresh data: get_all_tasks() always returns current state
     """
     
     BASE_URL = "https://api.ticktick.com/api/v2/"
     BATCH_CHECK_URL = BASE_URL + "batch/check/0"
     
-    # Headers that mimic the web app
-    USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    X_DEVICE = json.dumps({
-        "platform": "web",
-        "os": "Windows 10",
-        "device": "Chrome 120.0.0.0",
-        "name": "",
-        "version": 6260,
-        "id": uuid.uuid4().hex[:24],
-        "channel": "website",
-        "campaign": "",
-        "websocket": ""
-    })
+    # Headers that mimic the web app - copied exactly from ticktick-py
+    USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36'
+    X_DEVICE = '{"platform":"web","os":"macOS 10.15.7","device":"Chrome 135.0.0.0","name":"","version":6260,"id":"674c46cf88bb9f5f73c3068a","channel":"website","campaign":"","websocket":""}'
     
     DEFAULT_HEADERS = {
-        "origin": "https://ticktick.com",
-        "referer": "https://ticktick.com/",
-        "user-agent": USER_AGENT,
-        "x-device": X_DEVICE,
-        "content-type": "application/json",
+        'origin': 'https://ticktick.com',
+        'sec-ch-ua': '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"macOS"',
+        'user-agent': USER_AGENT,
+        'x-device': X_DEVICE,
     }
     
     _instance: Optional["UnofficialAPIClient"] = None
@@ -118,9 +108,9 @@ class UnofficialAPIClient:
         self._initial_sync()
     
     def _login(self):
-        """Authenticate with username/password to get access token."""
+        """Authenticate with username/password to get session token."""
         url = self.BASE_URL + "user/signon"
-        params = {"wc": "true", "remember": "true"}
+        params = {"wc": True, "remember": True}
         payload = {
             "username": USERNAME,
             "password": PASSWORD
@@ -140,12 +130,12 @@ class UnofficialAPIClient:
         
         # Set the cookie for subsequent requests
         self._client.cookies.set("t", self._access_token)
-        logger.info("Login successful, access token obtained")
+        logger.info("Login successful, session token obtained")
     
     def _load_settings(self):
         """Load user settings (timezone, profile_id)."""
         url = self.BASE_URL + "user/preferences/settings"
-        params = {"includeWeb": "true"}
+        params = {"includeWeb": True}
         
         response = self._client.get(url, params=params)
         
