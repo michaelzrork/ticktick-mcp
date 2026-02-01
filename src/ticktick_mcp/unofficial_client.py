@@ -16,6 +16,24 @@ logger = logging.getLogger(__name__)
 
 # ============== Monkey patch for ticktick-py ==============
 def _patched_login(self, username: str, password: str) -> None:
+    """
+    Patched login that uses cached OAuth token when available.
+
+    The OAuth access_token can be used directly as the session cookie 't',
+    avoiding the /user/signon call which can fail with 500 errors.
+    """
+    # Check if OAuth manager already has a valid access token
+    if hasattr(self, 'oauth_manager') and self.oauth_manager:
+        token_info = getattr(self.oauth_manager, 'access_token_info', None)
+        if token_info and 'access_token' in token_info:
+            cached_token = token_info['access_token']
+            logger.info("  Using cached OAuth token, skipping /user/signon")
+            self.access_token = cached_token
+            self.cookies['t'] = cached_token
+            return
+
+    # Fallback to actual login if no cached token
+    logger.info("  No cached token, calling /user/signon")
     import secrets
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
@@ -86,19 +104,32 @@ class TickTickUnofficialClient:
             cache_path=str(self._token_cache_path)
         )
 
-    def sync_initialize(self, username, password):
+    def sync_initialize(self, username, password, max_retries=3):
         """
-        Mimics the original client.py behavior: 
-        Loads token from cache if possible to skip login.
+        Initialize ticktick-py client with retry logic.
+
+        TickTick's /user/signon endpoint can return 500 errors intermittently.
+        We retry with exponential backoff to handle transient failures.
         """
         oauth = self._create_oauth()
-        # This checks the file we just wrote to /tmp
-        token = oauth.get_access_token() 
-        
-        # Initialize the library client
-        # If 'token' is valid, the library will skip calling self._login()
-        self._ticktick_client = TickTickClient(username, password, oauth)
-        return self._ticktick_client
+        oauth.get_access_token()
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"  Login attempt {attempt + 1}/{max_retries}...")
+                self._ticktick_client = TickTickClient(username, password, oauth)
+                logger.info(f"  Login successful!")
+                return self._ticktick_client
+            except Exception as e:
+                last_error = e
+                wait_time = 2 ** attempt  # 1s, 2s, 4s
+                logger.warning(f"  Login attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"  Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+
+        raise last_error
 
     async def login(self, username: str, password: str) -> bool:
         """Async wrapper for the library initialization."""
