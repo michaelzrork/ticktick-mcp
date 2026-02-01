@@ -151,9 +151,9 @@ def save_tokens(access_token: str, refresh_token: str = None, expires_in: int = 
 
 
 # --- Unofficial API Client Function ---
-# This uses the unofficial_client.py which wraps ticktick-py
+# This uses unofficial_client.py with direct API calls
 
 def get_unofficial_client():
-    """Returns the unofficial API client (ticktick-py singleton)."""
-    from ticktick_mcp.unofficial_client import TickTickClientSingleton
-    return TickTickClientSingleton.get_client()
+    """Returns the unofficial API client for direct v2 API access."""
+    from ticktick_mcp.unofficial_client import UnofficialAPIClient
+    return UnofficialAPIClient.get_instance()
