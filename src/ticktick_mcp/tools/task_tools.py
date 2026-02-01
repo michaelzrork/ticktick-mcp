@@ -3,7 +3,7 @@ MCP Tools for TickTick Task operations.
 
 Uses the official TickTick OpenAPI v1 endpoints.
 
-Date format: "yyyy-MM-dd'T'HH:mm:ssZ" (e.g., "2019-11-13T03:00:00+0000")
+Date format: Accepts "2026-01-31T21:00:00" and auto-appends timezone offset.
 Priority values: 0=None, 1=Low, 3=Medium, 5=High
 Reminder format: RFC 5545 TRIGGER (e.g., "TRIGGER:PT0S", "TRIGGER:-PT30M")
 Recurrence format: RFC 5545 RRULE (e.g., "RRULE:FREQ=DAILY;INTERVAL=1")
@@ -14,12 +14,80 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ticktick_mcp.mcp_instance import mcp
 from ticktick_mcp.config import get_ticktick_client
 from ticktick_mcp.ticktick_client import TickTickAPIError
 
 logger = logging.getLogger(__name__)
+
+
+def _format_date_for_ticktick(date_str: str | None, time_zone: str | None = None) -> str | None:
+    """
+    Format a date string for TickTick API.
+
+    TickTick expects: "2026-01-31T21:00:00.000-0500"
+    Accepts input like: "2026-01-31T21:00:00" or "2026-01-31"
+
+    Args:
+        date_str: Date string (simple format without timezone)
+        time_zone: IANA timezone name (e.g., "America/New_York")
+
+    Returns:
+        Formatted date string with milliseconds and timezone offset
+    """
+    if not date_str:
+        return None
+
+    # If already has timezone offset (contains + or - near end), return as-is with .000 if needed
+    if len(date_str) > 10 and ('+' in date_str[-6:] or '-' in date_str[-6:]):
+        # Check if the - is part of a timezone offset (not the date separator)
+        last_minus = date_str.rfind('-')
+        if last_minus > 10 or '+' in date_str[-6:]:
+            # Already has timezone, just ensure .000 is present
+            if '.000' not in date_str:
+                if '+' in date_str:
+                    parts = date_str.split('+')
+                    return f"{parts[0]}.000+{parts[1]}"
+                else:
+                    idx = date_str.rfind('-')
+                    if idx > 10:
+                        return f"{date_str[:idx]}.000{date_str[idx:]}"
+            return date_str
+
+    # Parse the input date
+    try:
+        if 'T' in date_str:
+            # Has time component
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        else:
+            # Date only - assume start of day
+            dt = datetime.fromisoformat(f"{date_str}T00:00:00")
+    except ValueError as e:
+        logger.warning(f"Failed to parse date '{date_str}': {e}")
+        return date_str  # Return as-is if parsing fails
+
+    # Apply timezone if provided
+    if time_zone:
+        try:
+            tz = ZoneInfo(time_zone)
+            # If dt is naive, localize it; if aware, convert it
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=tz)
+            else:
+                dt = dt.astimezone(tz)
+        except Exception as e:
+            logger.warning(f"Failed to apply timezone '{time_zone}': {e}")
+
+    # Format for TickTick
+    if dt.tzinfo:
+        # Format with timezone offset (no colon): 2026-01-31T21:00:00.000-0500
+        offset = dt.strftime('%z')  # Returns like -0500
+        return dt.strftime(f'%Y-%m-%dT%H:%M:%S.000{offset}')
+    else:
+        # No timezone - append +0000 (UTC)
+        return dt.strftime('%Y-%m-%dT%H:%M:%S.000+0000')
 
 
 def _parse_date(date_str: str | None) -> datetime | None:
@@ -179,9 +247,9 @@ async def ticktick_create_task(
         content: Task content/notes
         desc: Description for checklist
         is_all_day: Whether it's an all-day task
-        start_date: Start date in "yyyy-MM-dd'T'HH:mm:ssZ" format
-        due_date: Due date in "yyyy-MM-dd'T'HH:mm:ssZ" format
-        time_zone: Timezone (e.g., "America/New_York")
+        start_date: Start date (e.g., "2026-01-31T21:00:00"). Timezone offset auto-added.
+        due_date: Due date (e.g., "2026-01-31T21:00:00"). Timezone offset auto-added.
+        time_zone: Timezone for dates (e.g., "America/New_York"). Used to calculate offset.
         reminders: List of reminders. Examples:
             - "TRIGGER:PT0S" = At time of event
             - "TRIGGER:-PT30M" = 30 minutes before
@@ -203,6 +271,10 @@ async def ticktick_create_task(
             "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
         }
 
+    # Format dates with timezone offset
+    formatted_start = _format_date_for_ticktick(start_date, time_zone)
+    formatted_due = _format_date_for_ticktick(due_date, time_zone)
+
     try:
         task = await client.create_task(
             title=title,
@@ -210,8 +282,8 @@ async def ticktick_create_task(
             content=content,
             desc=desc,
             is_all_day=is_all_day,
-            start_date=start_date,
-            due_date=due_date,
+            start_date=formatted_start,
+            due_date=formatted_due,
             time_zone=time_zone,
             reminders=reminders,
             repeat_flag=repeat_flag,
@@ -246,8 +318,8 @@ async def ticktick_create_task_with_subtasks(
         project_id: Project ID (required)
         subtasks: List of subtask titles (required)
         content: Task content/notes
-        due_date: Due date in "yyyy-MM-dd'T'HH:mm:ssZ" format
-        time_zone: Timezone
+        due_date: Due date (e.g., "2026-01-31T21:00:00"). Timezone offset auto-added.
+        time_zone: Timezone for dates (e.g., "America/New_York")
         priority: Priority level (0=None, 1=Low, 3=Medium, 5=High)
         tags: List of tags
 
@@ -266,12 +338,15 @@ async def ticktick_create_task_with_subtasks(
         for subtask_title in subtasks
     ]
 
+    # Format date with timezone offset
+    formatted_due = _format_date_for_ticktick(due_date, time_zone)
+
     try:
         task = await client.create_task(
             title=title,
             project_id=project_id,
             content=content,
-            due_date=due_date,
+            due_date=formatted_due,
             time_zone=time_zone,
             priority=priority,
             tags=tags,
@@ -329,6 +404,10 @@ async def ticktick_update_task(
             "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
         }
 
+    # Format dates with timezone offset
+    formatted_start = _format_date_for_ticktick(start_date, time_zone)
+    formatted_due = _format_date_for_ticktick(due_date, time_zone)
+
     try:
         task = await client.update_task(
             task_id=task_id,
@@ -336,8 +415,8 @@ async def ticktick_update_task(
             title=title,
             content=content,
             is_all_day=is_all_day,
-            start_date=start_date,
-            due_date=due_date,
+            start_date=formatted_start,
+            due_date=formatted_due,
             time_zone=time_zone,
             reminders=reminders,
             repeat_flag=repeat_flag,
