@@ -221,14 +221,18 @@ def legacy_ticktick_get_all(
         return {"error": "Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD."}
 
     try:
-        if obj_type == "tasks":
-            result = list(client.state["tasks"].values())
-        elif obj_type == "projects":
-            result = list(client.state["projects"].values())
-        elif obj_type == "tags":
-            result = list(client.state["tags"].values())
-        else:
+        if obj_type not in ("tasks", "projects", "tags"):
             return {"error": f"Unknown object type: {obj_type}"}
+
+        state_data = client.state.get(obj_type, [])
+
+        # Handle both dict and list formats from ticktick-py state
+        if isinstance(state_data, dict):
+            result = list(state_data.values())
+        elif isinstance(state_data, list):
+            result = state_data
+        else:
+            result = []
 
         logger.info(f"Retrieved {len(result)} {obj_type}")
         return result
@@ -265,4 +269,286 @@ def legacy_ticktick_get_tasks_from_project(project_id: str) -> dict[str, Any] | 
         return tasks
     except Exception as e:
         logger.error(f"Failed to get tasks from project: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def legacy_ticktick_complete_task(task_id: str) -> dict[str, Any]:
+    """
+    Mark a task as complete using the legacy ticktick-py client.
+
+    Args:
+        task_id: The task ID to complete
+
+    Returns:
+        Success message or error
+    """
+    logger.info(f"legacy_ticktick_complete_task called for task: {task_id}")
+
+    client = TickTickClientSingleton.get_client()
+    if not client:
+        logger.warning("Unofficial client not available")
+        return {"error": "Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD."}
+
+    try:
+        # Get the task first
+        task = client.get_by_id(task_id)
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        # Complete the task using ticktick-py's method
+        client.complete(task)
+        logger.info(f"Successfully completed task {task_id}")
+        return {"success": True, "message": f"Task {task_id} completed"}
+    except Exception as e:
+        logger.error(f"Failed to complete task: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def legacy_ticktick_move_task(task_id: str, to_project_id: str) -> dict[str, Any]:
+    """
+    Move a task to a different project using the legacy ticktick-py client.
+
+    Args:
+        task_id: The task ID to move
+        to_project_id: The destination project ID
+
+    Returns:
+        Updated task or error
+    """
+    logger.info(f"legacy_ticktick_move_task called: task={task_id}, to_project={to_project_id}")
+
+    client = TickTickClientSingleton.get_client()
+    if not client:
+        logger.warning("Unofficial client not available")
+        return {"error": "Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD."}
+
+    try:
+        # Get the task first
+        task = client.get_by_id(task_id)
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        # Get the destination project
+        project = client.get_by_id(to_project_id)
+        if not project:
+            return {"error": f"Project not found: {to_project_id}"}
+
+        # Move the task using ticktick-py's method
+        result = client.move(task, project)
+        logger.info(f"Successfully moved task {task_id} to project {to_project_id}")
+        return {"success": True, "task": result, "moved_to": to_project_id}
+    except Exception as e:
+        logger.error(f"Failed to move task: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def legacy_ticktick_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str, Any]:
+    """
+    Make one task a subtask of another task using the legacy ticktick-py client.
+
+    Both tasks must be in the same project.
+
+    Args:
+        child_task_id: The task ID to become a subtask
+        parent_task_id: The task ID that will become the parent
+
+    Returns:
+        Success message or error
+    """
+    logger.info(f"legacy_ticktick_make_subtask called: child={child_task_id}, parent={parent_task_id}")
+
+    client = TickTickClientSingleton.get_client()
+    if not client:
+        logger.warning("Unofficial client not available")
+        return {"error": "Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD."}
+
+    try:
+        # Get both tasks
+        child_task = client.get_by_id(child_task_id)
+        if not child_task:
+            return {"error": f"Child task not found: {child_task_id}"}
+
+        parent_task = client.get_by_id(parent_task_id)
+        if not parent_task:
+            return {"error": f"Parent task not found: {parent_task_id}"}
+
+        # Check same project
+        if child_task.get("projectId") != parent_task.get("projectId"):
+            return {
+                "error": "Tasks must be in the same project",
+                "child_project": child_task.get("projectId"),
+                "parent_project": parent_task.get("projectId")
+            }
+
+        # Make subtask using ticktick-py's method
+        result = client.make_subtask(child_task, parent_task)
+        logger.info(f"Successfully made task {child_task_id} a subtask of {parent_task_id}")
+        return {
+            "success": True,
+            "message": f"Task '{child_task.get('title')}' is now a subtask of '{parent_task.get('title')}'",
+            "result": result
+        }
+    except Exception as e:
+        logger.error(f"Failed to make subtask: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def legacy_ticktick_delete_task(task_id: str) -> dict[str, Any]:
+    """
+    Delete a task using the legacy ticktick-py client.
+
+    Args:
+        task_id: The task ID to delete
+
+    Returns:
+        Success message or error
+    """
+    logger.info(f"legacy_ticktick_delete_task called for task: {task_id}")
+
+    client = TickTickClientSingleton.get_client()
+    if not client:
+        logger.warning("Unofficial client not available")
+        return {"error": "Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD."}
+
+    try:
+        # Get the task first
+        task = client.get_by_id(task_id)
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        # Delete the task using ticktick-py's method
+        client.delete(task)
+        logger.info(f"Successfully deleted task {task_id}")
+        return {"success": True, "message": f"Task {task_id} deleted"}
+    except Exception as e:
+        logger.error(f"Failed to delete task: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def legacy_ticktick_create_task(
+    title: str,
+    project_id: str,
+    content: str | None = None,
+    start_date: str | None = None,
+    due_date: str | None = None,
+    priority: int = 0,
+    tags: list[str] | None = None
+) -> dict[str, Any]:
+    """
+    Create a new task using the legacy ticktick-py client.
+
+    Args:
+        title: Task title (required)
+        project_id: Project ID to create task in (required)
+        content: Task description/notes
+        start_date: Start date in ISO format (e.g., "2024-01-31T09:00:00")
+        due_date: Due date in ISO format
+        priority: Priority (0=None, 1=Low, 3=Medium, 5=High)
+        tags: List of tag names
+
+    Returns:
+        Created task or error
+    """
+    logger.info(f"legacy_ticktick_create_task called: title={title}, project={project_id}")
+
+    client = TickTickClientSingleton.get_client()
+    if not client:
+        logger.warning("Unofficial client not available")
+        return {"error": "Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD."}
+
+    try:
+        # Build task dict for ticktick-py
+        task_dict = {
+            "title": title,
+            "projectId": project_id,
+            "priority": priority,
+        }
+
+        if content:
+            task_dict["content"] = content
+        if start_date:
+            task_dict["startDate"] = start_date
+        if due_date:
+            task_dict["dueDate"] = due_date
+        if tags:
+            task_dict["tags"] = tags
+
+        # Create using ticktick-py's builder or direct method
+        result = client.task.create(title, projectId=project_id)
+
+        # Update with additional fields if needed
+        if content or start_date or due_date or priority or tags:
+            result.update(task_dict)
+            result = client.update(result)
+
+        logger.info(f"Successfully created task: {result.get('id')}")
+        return {"success": True, "task": result}
+    except Exception as e:
+        logger.error(f"Failed to create task: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def legacy_ticktick_update_task(
+    task_id: str,
+    title: str | None = None,
+    content: str | None = None,
+    start_date: str | None = None,
+    due_date: str | None = None,
+    priority: int | None = None,
+    tags: list[str] | None = None
+) -> dict[str, Any]:
+    """
+    Update an existing task using the legacy ticktick-py client.
+
+    Args:
+        task_id: The task ID to update (required)
+        title: New task title
+        content: New task description/notes
+        start_date: New start date in ISO format
+        due_date: New due date in ISO format
+        priority: New priority (0=None, 1=Low, 3=Medium, 5=High)
+        tags: New list of tag names
+
+    Returns:
+        Updated task or error
+    """
+    logger.info(f"legacy_ticktick_update_task called for task: {task_id}")
+
+    client = TickTickClientSingleton.get_client()
+    if not client:
+        logger.warning("Unofficial client not available")
+        return {"error": "Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD."}
+
+    try:
+        # Get the task first
+        task = client.get_by_id(task_id)
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        # Update fields
+        if title is not None:
+            task["title"] = title
+        if content is not None:
+            task["content"] = content
+        if start_date is not None:
+            task["startDate"] = start_date
+        if due_date is not None:
+            task["dueDate"] = due_date
+        if priority is not None:
+            task["priority"] = priority
+        if tags is not None:
+            task["tags"] = tags
+
+        # Save updates
+        result = client.update(task)
+        logger.info(f"Successfully updated task {task_id}")
+        return {"success": True, "task": result}
+    except Exception as e:
+        logger.error(f"Failed to update task: {e}")
         return {"error": str(e)}
