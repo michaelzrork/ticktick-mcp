@@ -55,22 +55,16 @@ class TickTickUnofficialClient:
 
     def _get_headers(self) -> dict[str, str]:
         """Get headers for API requests."""
-        # Match ticktick-py format exactly
-        import json
-        x_device = {
-            "platform": "web",
-            "os": "OS X",
-            "device": "Firefox 95.0",
-            "name": "unofficial api!",
-            "version": 4531,
-            "id": "6490" + self._device_id,
-            "channel": "website",
-            "campaign": "",
-            "websocket": ""
-        }
+        # Match ticktick-py format EXACTLY - use raw string, not json.dumps()
+        # ticktick-py: X_DEVICE_ = '{"platform":"web","os":"OS X",...}'
+        x_device = (
+            '{"platform":"web","os":"OS X","device":"Firefox 95.0",'
+            '"name":"unofficial api!","version":4531,'
+            f'"id":"6490{self._device_id}","channel":"website","campaign":"","websocket":""' + '}'
+        )
         return {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:95.0) Gecko/20100101 Firefox/95.0",
-            "x-device": json.dumps(x_device),
+            "x-device": x_device,
         }
 
     def _get_cookies(self) -> dict[str, str]:
@@ -116,7 +110,7 @@ class TickTickUnofficialClient:
             logger.info(f"Attempting login for user: {username} (password length: {len(password)})")
 
             response = await client.post(
-                f"{self.BASE_URL}/user/signon",
+                f"{self.BASE_URL}/user/signin",
                 params={"wc": True, "remember": True},
                 json={
                     "username": username,
