@@ -79,10 +79,15 @@ USERNAME: str | None = None
 PASSWORD: str | None = None
 _unofficial_client_initialized: bool = False
 
+# Cloud deployment detection - use /tmp for token cache when TICKTICK_OAUTH_TOKEN is set
+IS_CLOUD_DEPLOYMENT: bool = False
+UNOFFICIAL_TOKEN_CACHE_PATH: Path = Path.home() / ".config" / "ticktick-mcp" / ".token-oauth"
+
 
 def _load_env_vars() -> None:
     """Load environment variables from hosting platform or .env file."""
     global CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, ACCESS_TOKEN, USER_ID, USERNAME, PASSWORD
+    global IS_CLOUD_DEPLOYMENT, UNOFFICIAL_TOKEN_CACHE_PATH
 
     # Check if OAuth credentials are already set (e.g., by Railway)
     client_id = os.getenv("TICKTICK_CLIENT_ID")
@@ -142,13 +147,24 @@ def _load_env_vars() -> None:
     # Load access token
     access_token = os.getenv("TICKTICK_ACCESS_TOKEN")
 
-    # Check for legacy TICKTICK_OAUTH_TOKEN format (full JSON object)
+    # Check for TICKTICK_OAUTH_TOKEN (full JSON object) - indicates cloud deployment
     oauth_token_json = os.getenv("TICKTICK_OAUTH_TOKEN")
-    if oauth_token_json and not access_token:
+    if oauth_token_json:
+        # Cloud deployment mode - use /tmp for token cache (writable on Railway, etc.)
+        IS_CLOUD_DEPLOYMENT = True
+        UNOFFICIAL_TOKEN_CACHE_PATH = Path("/tmp") / ".token-oauth"
+        logger.info(f"Cloud deployment detected, using token cache: {UNOFFICIAL_TOKEN_CACHE_PATH}")
+
+        # Write the full token to cache with expire_time for ticktick-py
         try:
             token_data = json.loads(oauth_token_json)
-            access_token = token_data.get("access_token")
-            logger.info("Extracted access_token from TICKTICK_OAUTH_TOKEN JSON")
+            token_data["expire_time"] = int(time.time()) + token_data.get("expires_in", 15552000)
+            UNOFFICIAL_TOKEN_CACHE_PATH.write_text(json.dumps(token_data))
+            logger.info(f"Wrote OAuth token to cloud cache: {UNOFFICIAL_TOKEN_CACHE_PATH}")
+
+            if not access_token:
+                access_token = token_data.get("access_token")
+                logger.info("Extracted access_token from TICKTICK_OAUTH_TOKEN JSON")
         except json.JSONDecodeError:
             logger.warning("TICKTICK_OAUTH_TOKEN is not valid JSON")
 
@@ -265,7 +281,7 @@ async def get_unofficial_client() -> TickTickUnofficialClient | None:
                 client_secret=CLIENT_SECRET,
                 redirect_uri=REDIRECT_URI,
                 access_token=ACCESS_TOKEN,
-                token_cache_path=CONFIG_DIR / ".token-oauth"
+                token_cache_path=UNOFFICIAL_TOKEN_CACHE_PATH
             )
             _unofficial_client_initialized = True
             logger.info("Unofficial client initialized successfully")
