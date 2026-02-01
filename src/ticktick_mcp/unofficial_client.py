@@ -117,7 +117,9 @@ class TickTickUnofficialClient:
     def _sync_login(self, username: str, password: str) -> None:
         """Synchronous login using ticktick-py."""
         oauth = self._create_oauth()
-        # ticktick-py handles the login internally
+        # Must call get_access_token() to initialize the OAuth session
+        # before passing to TickTickClient (this is what the old code did)
+        oauth.get_access_token()
         self._ticktick_client = TickTickClient(username, password, oauth)
         logger.info("Successfully authenticated with ticktick-py")
 
