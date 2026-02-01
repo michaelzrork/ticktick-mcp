@@ -258,7 +258,14 @@ async def get_unofficial_client() -> TickTickUnofficialClient | None:
     # Initialize on first use
     if not _unofficial_client_initialized:
         try:
-            client = await init_unofficial_client(USERNAME, PASSWORD)
+            client = await init_unofficial_client(
+                username=USERNAME,
+                password=PASSWORD,
+                client_id=CLIENT_ID,
+                client_secret=CLIENT_SECRET,
+                redirect_uri=REDIRECT_URI,
+                token_cache_path=CONFIG_DIR / ".token-oauth"
+            )
             _unofficial_client_initialized = True
             logger.info("Unofficial client initialized successfully")
             return client

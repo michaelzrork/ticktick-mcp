@@ -6,14 +6,16 @@ This client handles features not available in the official OpenAPI v1:
 - Set repeatFrom (repeat from due date vs completion date)
 - Task activity logs
 
-Base URL: https://api.ticktick.com/api/v2/
-Authentication: Session-based with username/password login
+Uses ticktick-py library for authentication (which works reliably).
 """
 
-import secrets
-import httpx
-from typing import Optional, Any
+import asyncio
 import logging
+from pathlib import Path
+from typing import Optional, Any
+
+from ticktick.oauth2 import OAuth2Session as OAuth2
+from ticktick.api import TickTickClient
 
 logger = logging.getLogger(__name__)
 
@@ -37,61 +39,59 @@ class TickTickUnofficialClient:
     - Set repeatFrom via /api/v2/batch/task
     - Get task activity logs
 
-    Authentication is session-based using username/password.
+    Uses ticktick-py library for authentication.
     """
 
     BASE_URL = "https://api.ticktick.com/api/v2"
 
-    def __init__(self):
-        """Initialize the unofficial client (not yet authenticated)."""
-        self._client: Optional[httpx.AsyncClient] = None
-        self._access_token: Optional[str] = None
-        self._device_id = secrets.token_hex(10)
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        redirect_uri: str,
+        token_cache_path: Optional[Path] = None
+    ):
+        """
+        Initialize the unofficial client.
+
+        Args:
+            client_id: OAuth client ID
+            client_secret: OAuth client secret
+            redirect_uri: OAuth redirect URI
+            token_cache_path: Path to cache OAuth tokens (optional)
+        """
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._redirect_uri = redirect_uri
+        self._token_cache_path = token_cache_path or Path.home() / ".config" / "ticktick-mcp" / ".token-oauth"
+        self._ticktick_client: Optional[TickTickClient] = None
 
     @property
     def is_authenticated(self) -> bool:
         """Check if the client is authenticated."""
-        return self._access_token is not None
+        return self._ticktick_client is not None
 
-    def _get_headers(self) -> dict[str, str]:
-        """Get headers for API requests."""
-        # Match ticktick-py format EXACTLY - use raw string, not json.dumps()
-        # ticktick-py: X_DEVICE_ = '{"platform":"web","os":"OS X",...}'
-        x_device = (
-            '{"platform":"web","os":"OS X","device":"Firefox 95.0",'
-            '"name":"unofficial api!","version":4531,'
-            f'"id":"6490{self._device_id}","channel":"website","campaign":"","websocket":""' + '}'
+    def _create_oauth(self) -> OAuth2:
+        """Create the OAuth2 session object."""
+        return OAuth2(
+            client_id=self._client_id,
+            client_secret=self._client_secret,
+            redirect_uri=self._redirect_uri,
+            cache_path=str(self._token_cache_path)
         )
-        return {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:95.0) Gecko/20100101 Firefox/95.0",
-            "x-device": x_device,
-        }
 
-    def _get_cookies(self) -> dict[str, str]:
-        """Get cookies for authenticated requests."""
-        if self._access_token:
-            return {"t": self._access_token}
-        return {}
-
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the HTTP client."""
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                headers=self._get_headers(),
-                cookies=self._get_cookies(),
-                timeout=30.0
-            )
-        return self._client
-
-    async def close(self):
-        """Close the HTTP client."""
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
-            self._client = None
+    def _sync_login(self, username: str, password: str) -> None:
+        """Synchronous login using ticktick-py."""
+        oauth = self._create_oauth()
+        # ticktick-py handles the login internally
+        self._ticktick_client = TickTickClient(username, password, oauth)
+        logger.info("Successfully authenticated with ticktick-py")
 
     async def login(self, username: str, password: str) -> bool:
         """
         Authenticate with TickTick using username and password.
+
+        Uses ticktick-py library for reliable authentication.
 
         Args:
             username: TickTick account email
@@ -103,54 +103,39 @@ class TickTickUnofficialClient:
         Raises:
             TickTickUnofficialAPIError: If login fails
         """
-        client = await self._get_client()
+        logger.info(f"Attempting login for user: {username} (password length: {len(password)})")
 
         try:
-            # Log the request (without exposing password)
-            logger.info(f"Attempting login for user: {username} (password length: {len(password)})")
-
-            response = await client.post(
-                f"{self.BASE_URL}/user/signin",
-                params={"wc": True, "remember": True},
-                json={
-                    "username": username,
-                    "password": password
-                }
-            )
-
-            if response.status_code >= 400:
-                try:
-                    body = response.json()
-                except Exception:
-                    body = response.text
-                logger.error(f"Login failed with status {response.status_code}: {body}")
-                raise TickTickUnofficialAPIError(
-                    status_code=response.status_code,
-                    message=f"Login failed: {body}",
-                    response_body=body
-                )
-
-            data = response.json()
-            self._access_token = data.get("token")
-
-            if not self._access_token:
-                raise TickTickUnofficialAPIError(
-                    status_code=response.status_code,
-                    message="No token in login response",
-                    response_body=data
-                )
-
-            # Close and recreate client with auth cookies
-            await self.close()
-            logger.info("Successfully authenticated with unofficial API")
+            # Run sync ticktick-py login in thread pool
+            await asyncio.to_thread(self._sync_login, username, password)
             return True
-
-        except httpx.RequestError as e:
-            logger.error(f"Login request error: {e}")
+        except Exception as e:
+            logger.error(f"Login failed: {e}")
             raise TickTickUnofficialAPIError(
-                status_code=0,
-                message=f"Login request failed: {str(e)}"
+                status_code=401,
+                message=f"Login failed: {str(e)}"
             )
+
+    def _sync_request(
+        self,
+        method: str,
+        url: str,
+        json: Optional[dict] = None,
+        params: Optional[dict] = None
+    ) -> Any:
+        """Make a synchronous authenticated API request using ticktick-py's session."""
+        if not self._ticktick_client:
+            raise TickTickUnofficialAPIError(
+                status_code=401,
+                message="Not authenticated. Call login() first."
+            )
+
+        if method.upper() == "GET":
+            return self._ticktick_client.http_get(url, params=params)
+        elif method.upper() == "POST":
+            return self._ticktick_client.http_post(url, json=json, params=params)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
 
     async def _request(
         self,
@@ -174,42 +159,15 @@ class TickTickUnofficialClient:
         Raises:
             TickTickUnofficialAPIError: If the API returns an error
         """
-        if not self.is_authenticated:
-            raise TickTickUnofficialAPIError(
-                status_code=401,
-                message="Not authenticated. Call login() first."
-            )
-
-        client = await self._get_client()
+        url = f"{self.BASE_URL}{endpoint}"
 
         try:
-            response = await client.request(
-                method=method,
-                url=f"{self.BASE_URL}{endpoint}",
-                json=json,
-                params=params,
-                cookies=self._get_cookies()
+            result = await asyncio.to_thread(
+                self._sync_request, method, url, json, params
             )
-
-            logger.debug(f"{method} {endpoint} -> {response.status_code}")
-
-            if response.status_code >= 400:
-                try:
-                    body = response.json()
-                except Exception:
-                    body = response.text
-                raise TickTickUnofficialAPIError(
-                    status_code=response.status_code,
-                    message=f"API request failed: {endpoint}",
-                    response_body=body
-                )
-
-            if response.status_code == 204 or not response.content:
-                return None
-
-            return response.json()
-
-        except httpx.RequestError as e:
+            logger.debug(f"{method} {endpoint} -> success")
+            return result
+        except Exception as e:
             logger.error(f"Request error: {e}")
             raise TickTickUnofficialAPIError(
                 status_code=0,
@@ -371,8 +329,6 @@ class TickTickUnofficialClient:
                 message="Not authenticated. Call login() first."
             )
 
-        client = await self._get_client()
-
         # Activity log uses /api/v1/ not /api/v2/
         url = f"https://api.ticktick.com/api/v1/task/activity/{task_id}"
         params = {}
@@ -380,32 +336,11 @@ class TickTickUnofficialClient:
             params["skip"] = skip
 
         try:
-            response = await client.request(
-                method="GET",
-                url=url,
-                params=params if params else None,
-                cookies=self._get_cookies()
+            result = await asyncio.to_thread(
+                self._sync_request, "GET", url, None, params if params else None
             )
-
-            logger.debug(f"GET {url} -> {response.status_code}")
-
-            if response.status_code >= 400:
-                try:
-                    body = response.json()
-                except Exception:
-                    body = response.text
-                raise TickTickUnofficialAPIError(
-                    status_code=response.status_code,
-                    message=f"API request failed: {url}",
-                    response_body=body
-                )
-
-            if response.status_code == 204 or not response.content:
-                return []
-
-            return response.json()
-
-        except httpx.RequestError as e:
+            return result if result else []
+        except Exception as e:
             logger.error(f"Request error: {e}")
             raise TickTickUnofficialAPIError(
                 status_code=0,
@@ -422,18 +357,34 @@ def get_unofficial_client() -> Optional[TickTickUnofficialClient]:
     return _unofficial_client
 
 
-async def init_unofficial_client(username: str, password: str) -> TickTickUnofficialClient:
+async def init_unofficial_client(
+    username: str,
+    password: str,
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str,
+    token_cache_path: Optional[Path] = None
+) -> TickTickUnofficialClient:
     """
     Initialize and authenticate the unofficial client.
 
     Args:
         username: TickTick account email
         password: TickTick account password
+        client_id: OAuth client ID
+        client_secret: OAuth client secret
+        redirect_uri: OAuth redirect URI
+        token_cache_path: Path to cache OAuth tokens (optional)
 
     Returns:
         Authenticated TickTickUnofficialClient instance
     """
     global _unofficial_client
-    _unofficial_client = TickTickUnofficialClient()
+    _unofficial_client = TickTickUnofficialClient(
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=redirect_uri,
+        token_cache_path=token_cache_path
+    )
     await _unofficial_client.login(username, password)
     return _unofficial_client
