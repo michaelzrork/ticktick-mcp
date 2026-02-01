@@ -113,12 +113,32 @@ class TickTickUnofficialClient:
         url = f"https://api.ticktick.com/api/v2{endpoint}"
         return await asyncio.to_thread(self._sync_request, method, url, json, params)
 
-    def _sync_request(self, method, url, json, params):
+    def _sync_request(self, method, url, json_data, params):
         if not self._ticktick_client:
             raise TickTickUnofficialAPIError(401, "Not authenticated")
+
+        # Use _session directly for full control over requests
+        # This bypasses http_get/http_post which have limited error handling
+        session = self._ticktick_client._session
+
+        logger.info(f"  _sync_request: {method} {url}")
+        logger.info(f"  Session cookies: {list(session.cookies.keys())}")
+
         if method.upper() == "GET":
-            return self._ticktick_client.http_get(url, params=params)
-        return self._ticktick_client.http_post(url, json=json, params=params)
+            response = session.get(url, params=params)
+        else:
+            response = session.post(url, json=json_data, params=params)
+
+        logger.info(f"  Response status: {response.status_code}")
+
+        if response.status_code != 200:
+            logger.error(f"  Response body: {response.text[:500]}")
+            raise TickTickUnofficialAPIError(
+                response.status_code,
+                f"API request failed: {response.text[:200]}"
+            )
+
+        return response.json()
 
     async def get_task_activity(self, task_id: str, skip: int = 0) -> list[dict]:
         url = f"https://api.ticktick.com/api/v1/task/activity/{task_id}"
