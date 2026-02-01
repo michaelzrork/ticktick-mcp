@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Any
 
-from ticktick.oauth2 import OAuth2Session as OAuth2
+from ticktick.oauth2 import OAuth2
 from ticktick.api import TickTickClient
 
 logger = logging.getLogger(__name__)
