@@ -418,7 +418,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.6.0" },
     { name = "python-dotenv", specifier = ">=1.1.0" },
     { name = "starlette", specifier = ">=0.36.0" },
-    { name = "ticktick-py", specifier = ">=2.0.0" },
+    { name = "ticktick-py", git = "https://github.com/jen6/ticktick-py.git?rev=main" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", specifier = ">=0.27.0" },
 ]
@@ -428,17 +428,13 @@ dev = [{ name = "pytest", specifier = ">=8.3.5" }]
 
 [[package]]
 name = "ticktick-py"
-version = "2.0.3"
-source = { registry = "https://pypi.org/simple" }
+version = "2.0.4"
+source = { git = "https://github.com/jen6/ticktick-py.git?rev=main#ae11d15cab230ad70983ceaa970c4e952f1be918" }
 dependencies = [
     { name = "pytz" },
     { name = "regex" },
     { name = "requests" },
     { name = "urllib3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/91/7b/f1bd14f6aa2cb021c82f6f71f81f1b4057410879b71c5d261897476bc539/ticktick-py-2.0.3.tar.gz", hash = "sha256:f6e96870b91f16717a81e20ffef4a2f5b2a524d6a79e31ab64e895a90a372b51", size = 44939, upload-time = "2023-07-09T05:05:19.759Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/6b/1af30827789520a724906e7249531007ddc4fab5a4b50f4e5275dc73324f/ticktick_py-2.0.3-py3-none-any.whl", hash = "sha256:5fdb01fa45b1b477ed2921a48db106f090b9519cf52246647e67465414479840", size = 46079, upload-time = "2023-07-09T05:05:18.153Z" },
 ]
 
 [[package]]
