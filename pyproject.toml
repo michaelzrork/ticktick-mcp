@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ticktick-mcp"
-version = "0.1.0"
-description = "MCP server for interacting with the TickTick API."
+version = "0.2.0"
+description = "MCP server for interacting with the TickTick API using official OpenAPI v1 endpoints."
 authors = [
   { name="jen6", email="work.jen6@gmail.com" },
 ]
@@ -13,10 +13,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "anyio>=4.9.0",
+    "httpx>=0.27.0",
     "mcp>=1.6.0",
     "python-dotenv>=1.1.0",
-    "ticktick-py",
-    "tzlocal>=5.3.1",
+    "starlette>=0.36.0",
+    "uvicorn>=0.27.0",
 ]
 
 [project.scripts]
@@ -24,9 +25,6 @@ ticktick-mcp = "main:main"
 
 [project.urls]
 "Homepage" = "https://github.com/jen6/ticktick-mcp"
-
-[tool.uv.sources]
-ticktick-py = { git = "https://github.com/jen6/ticktick-py.git", rev = "main" }
 
 [dependency-groups]
 dev = [

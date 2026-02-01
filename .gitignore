@@ -239,3 +239,6 @@ pyrightconfig.json
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/python,macos,visualstudiocode
+
+# Development tools and API documentation (HAR files, etc.)
+Dev Tools & API/
