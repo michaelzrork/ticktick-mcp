@@ -127,9 +127,10 @@ class TickTickUnofficialClient:
                     body = response.json()
                 except Exception:
                     body = response.text
+                logger.error(f"Login failed with status {response.status_code}: {body}")
                 raise TickTickUnofficialAPIError(
                     status_code=response.status_code,
-                    message="Login failed",
+                    message=f"Login failed: {body}",
                     response_body=body
                 )
 
