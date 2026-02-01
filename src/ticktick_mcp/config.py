@@ -262,18 +262,44 @@ async def get_unofficial_client() -> TickTickUnofficialClient | None:
     """
     global _unofficial_client_initialized
 
+    logger.info("=== get_unofficial_client() called ===")
+    logger.info(f"  USERNAME set: {bool(USERNAME)} (length: {len(USERNAME) if USERNAME else 0})")
+    logger.info(f"  PASSWORD set: {bool(PASSWORD)} (length: {len(PASSWORD) if PASSWORD else 0})")
+    logger.info(f"  CLIENT_ID set: {bool(CLIENT_ID)} (length: {len(CLIENT_ID) if CLIENT_ID else 0})")
+    logger.info(f"  CLIENT_SECRET set: {bool(CLIENT_SECRET)} (length: {len(CLIENT_SECRET) if CLIENT_SECRET else 0})")
+    logger.info(f"  REDIRECT_URI: {REDIRECT_URI}")
+    logger.info(f"  ACCESS_TOKEN set: {bool(ACCESS_TOKEN)} (length: {len(ACCESS_TOKEN) if ACCESS_TOKEN else 0})")
+    logger.info(f"  IS_CLOUD_DEPLOYMENT: {IS_CLOUD_DEPLOYMENT}")
+    logger.info(f"  UNOFFICIAL_TOKEN_CACHE_PATH: {UNOFFICIAL_TOKEN_CACHE_PATH}")
+    logger.info(f"  Token cache exists: {UNOFFICIAL_TOKEN_CACHE_PATH.exists() if UNOFFICIAL_TOKEN_CACHE_PATH else False}")
+    logger.info(f"  _unofficial_client_initialized: {_unofficial_client_initialized}")
+
     if not USERNAME or not PASSWORD:
-        logger.debug("Unofficial API credentials not configured")
+        logger.warning("Unofficial API credentials not configured - returning None")
         return None
 
     # Check if already initialized
     existing = _get_unofficial_client()
+    logger.info(f"  Existing client from _get_unofficial_client(): {existing}")
+    if existing:
+        logger.info(f"  Existing client is_authenticated: {existing.is_authenticated}")
     if existing and existing.is_authenticated:
+        logger.info("  Returning existing authenticated client")
         return existing
 
     # Initialize on first use
     if not _unofficial_client_initialized:
+        logger.info("  First-time initialization starting...")
         try:
+            logger.info(f"  Calling init_unofficial_client with:")
+            logger.info(f"    username: {USERNAME[:3]}***")
+            logger.info(f"    password: {'*' * len(PASSWORD) if PASSWORD else 'None'}")
+            logger.info(f"    client_id: {CLIENT_ID[:8]}*** (length: {len(CLIENT_ID)})")
+            logger.info(f"    client_secret: ***{CLIENT_SECRET[-4:] if CLIENT_SECRET else 'None'}")
+            logger.info(f"    redirect_uri: {REDIRECT_URI}")
+            logger.info(f"    access_token: {'set' if ACCESS_TOKEN else 'None'}")
+            logger.info(f"    token_cache_path: {UNOFFICIAL_TOKEN_CACHE_PATH}")
+
             client = await init_unofficial_client(
                 username=USERNAME,
                 password=PASSWORD,
@@ -284,10 +310,13 @@ async def get_unofficial_client() -> TickTickUnofficialClient | None:
                 token_cache_path=UNOFFICIAL_TOKEN_CACHE_PATH
             )
             _unofficial_client_initialized = True
-            logger.info("Unofficial client initialized successfully")
+            logger.info("  Unofficial client initialized successfully!")
+            logger.info(f"  Client is_authenticated: {client.is_authenticated}")
             return client
         except Exception as e:
-            logger.error(f"Failed to initialize unofficial client: {e}")
+            logger.error(f"  Failed to initialize unofficial client: {e}")
+            logger.exception("  Full traceback:")
             return None
 
+    logger.info("  Returning result from _get_unofficial_client()")
     return _get_unofficial_client()
