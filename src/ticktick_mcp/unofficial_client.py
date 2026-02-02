@@ -8,6 +8,7 @@ NO CACHING - every read fetches fresh data from the API.
 This eliminates the stale cache problem that plagued the ticktick-py approach.
 """
 
+import json
 import logging
 import time
 import uuid
@@ -24,23 +25,38 @@ from .config import (
 logger = logging.getLogger(__name__)
 
 
+# Generate a unique device ID for this installation
+# This avoids conflicts with other users/deployments using the same hardcoded ID
+_DEVICE_ID = uuid.uuid4().hex[:24]
+
+
 class UnofficialAPIClient:
     """
     Direct access to TickTick's unofficial v2 API.
-    
+
     Key differences from the old ticktick-py based approach:
     - No caching: Every read makes a fresh API call
     - Self-contained auth: No ticktick-py dependency
     - Fresh data: get_all_tasks() always returns current state
     """
-    
+
     BASE_URL = "https://api.ticktick.com/api/v2/"
     BATCH_CHECK_URL = BASE_URL + "batch/check/0"
-    
-    # Headers that mimic the web app - copied exactly from ticktick-py
+
+    # Headers that mimic the web app
     USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36'
-    X_DEVICE = '{"platform":"web","os":"macOS 10.15.7","device":"Chrome 135.0.0.0","name":"","version":6260,"id":"674c46cf88bb9f5f73c3068a","channel":"website","campaign":"","websocket":""}'
-    
+    X_DEVICE = json.dumps({
+        "platform": "web",
+        "os": "macOS 10.15.7",
+        "device": "Chrome 135.0.0.0",
+        "name": "",
+        "version": 6260,
+        "id": _DEVICE_ID,  # Unique per installation
+        "channel": "website",
+        "campaign": "",
+        "websocket": ""
+    })
+
     DEFAULT_HEADERS = {
         'origin': 'https://ticktick.com',
         'sec-ch-ua': '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
