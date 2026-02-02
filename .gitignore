@@ -242,3 +242,4 @@ pyrightconfig.json
 
 # Development tools and API documentation (HAR files, etc.)
 Dev Tools & API/
+.claude/settings.local.json
