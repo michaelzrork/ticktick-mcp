@@ -8,9 +8,7 @@ NO CACHING - every read fetches fresh data from the API.
 This eliminates the stale cache problem that plagued the ticktick-py approach.
 """
 
-import json
 import logging
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -25,38 +23,23 @@ from .config import (
 logger = logging.getLogger(__name__)
 
 
-# Generate a unique device ID for this installation
-# This avoids conflicts with other users/deployments using the same hardcoded ID
-_DEVICE_ID = uuid.uuid4().hex[:24]
-
-
 class UnofficialAPIClient:
     """
     Direct access to TickTick's unofficial v2 API.
-
+    
     Key differences from the old ticktick-py based approach:
     - No caching: Every read makes a fresh API call
     - Self-contained auth: No ticktick-py dependency
     - Fresh data: get_all_tasks() always returns current state
     """
-
+    
     BASE_URL = "https://api.ticktick.com/api/v2/"
     BATCH_CHECK_URL = BASE_URL + "batch/check/0"
-
-    # Headers that mimic the web app
+    
+    # Headers that mimic the web app - copied exactly from ticktick-py
     USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36'
-    X_DEVICE = json.dumps({
-        "platform": "web",
-        "os": "macOS 10.15.7",
-        "device": "Chrome 135.0.0.0",
-        "name": "",
-        "version": 6260,
-        "id": _DEVICE_ID,  # Unique per installation
-        "channel": "website",
-        "campaign": "",
-        "websocket": ""
-    })
-
+    X_DEVICE = '{"platform":"web","os":"macOS 10.15.7","device":"Chrome 135.0.0.0","name":"","version":6260,"id":"674c46cf88bb9f5f73c3068a","channel":"website","campaign":"","websocket":""}'
+    
     DEFAULT_HEADERS = {
         'origin': 'https://ticktick.com',
         'sec-ch-ua': '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
@@ -535,44 +518,21 @@ class UnofficialAPIClient:
     
     def pin_task(self, task_id: str) -> None:
         """Pin a task to the top of the list."""
-        url = "https://api.ticktick.com/api/v2/batch/order"
-
-        # Use a large negative number for pinned order (puts it at top)
-        # This mimics what the web app does
-        order = -int(time.time() * 1000000)
-
-        payload = {
-            "orderByType": {
-                "taskPinned": {
-                    "all": {
-                        "changed": [{"id": task_id, "type": 1, "order": order}],
-                        "deleted": []
-                    }
-                }
-            }
-        }
-
+        url = "https://api.ticktick.com/api/v2/batch/taskPin"
+        payload = {"add": [task_id]}
+        
         response = self.client.post(url, json=payload)
-
+        
         if response.status_code != 200:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
     
     def unpin_task(self, task_id: str) -> None:
         """Unpin a task."""
-        url = "https://api.ticktick.com/api/v2/batch/order"
-        payload = {
-            "orderByType": {
-                "taskPinned": {
-                    "all": {
-                        "changed": [],
-                        "deleted": [{"id": task_id}]
-                    }
-                }
-            }
-        }
-
+        url = "https://api.ticktick.com/api/v2/batch/taskPin"
+        payload = {"delete": [task_id]}
+        
         response = self.client.post(url, json=payload)
-
+        
         if response.status_code != 200:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
     
@@ -598,8 +558,40 @@ class UnofficialAPIClient:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
 
 
-# ==================== Module-level convenience function ====================
+# ==================== Module-level convenience functions ====================
 
 def get_client() -> Optional[UnofficialAPIClient]:
     """Get the unofficial API client instance."""
     return UnofficialAPIClient.get_instance()
+
+
+def get_task_activity(task_id: str, skip: int = 0) -> list:
+    """Get task activity log."""
+    client = get_client()
+    if not client:
+        raise RuntimeError("Unofficial client not initialized")
+    return client.get_task_activity(task_id, skip)
+
+
+def pin_task(task_id: str) -> None:
+    """Pin a task."""
+    client = get_client()
+    if not client:
+        raise RuntimeError("Unofficial client not initialized")
+    client.pin_task(task_id)
+
+
+def unpin_task(task_id: str) -> None:
+    """Unpin a task."""
+    client = get_client()
+    if not client:
+        raise RuntimeError("Unofficial client not initialized")
+    client.unpin_task(task_id)
+
+
+def set_repeat_from(task_id: str, project_id: str, repeat_from: str) -> None:
+    """Set repeat from due date or completion date."""
+    client = get_client()
+    if not client:
+        raise RuntimeError("Unofficial client not initialized")
+    client.set_repeat_from(task_id, project_id, repeat_from)
