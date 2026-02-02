@@ -9,6 +9,7 @@ This eliminates the stale cache problem that plagued the ticktick-py approach.
 """
 
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -518,21 +519,44 @@ class UnofficialAPIClient:
     
     def pin_task(self, task_id: str) -> None:
         """Pin a task to the top of the list."""
-        url = "https://api.ticktick.com/api/v2/batch/taskPin"
-        payload = {"add": [task_id]}
-        
+        url = "https://api.ticktick.com/api/v2/batch/order"
+
+        # Use a large negative number for pinned order (puts it at top)
+        # This mimics what the web app does
+        order = -int(time.time() * 1000000)
+
+        payload = {
+            "orderByType": {
+                "taskPinned": {
+                    "all": {
+                        "changed": [{"id": task_id, "type": 1, "order": order}],
+                        "deleted": []
+                    }
+                }
+            }
+        }
+
         response = self.client.post(url, json=payload)
-        
+
         if response.status_code != 200:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
     
     def unpin_task(self, task_id: str) -> None:
         """Unpin a task."""
-        url = "https://api.ticktick.com/api/v2/batch/taskPin"
-        payload = {"delete": [task_id]}
-        
+        url = "https://api.ticktick.com/api/v2/batch/order"
+        payload = {
+            "orderByType": {
+                "taskPinned": {
+                    "all": {
+                        "changed": [],
+                        "deleted": [{"id": task_id}]
+                    }
+                }
+            }
+        }
+
         response = self.client.post(url, json=payload)
-        
+
         if response.status_code != 200:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
     
@@ -558,40 +582,8 @@ class UnofficialAPIClient:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
 
 
-# ==================== Module-level convenience functions ====================
+# ==================== Module-level convenience function ====================
 
 def get_client() -> Optional[UnofficialAPIClient]:
     """Get the unofficial API client instance."""
     return UnofficialAPIClient.get_instance()
-
-
-def get_task_activity(task_id: str, skip: int = 0) -> list:
-    """Get task activity log."""
-    client = get_client()
-    if not client:
-        raise RuntimeError("Unofficial client not initialized")
-    return client.get_task_activity(task_id, skip)
-
-
-def pin_task(task_id: str) -> None:
-    """Pin a task."""
-    client = get_client()
-    if not client:
-        raise RuntimeError("Unofficial client not initialized")
-    client.pin_task(task_id)
-
-
-def unpin_task(task_id: str) -> None:
-    """Unpin a task."""
-    client = get_client()
-    if not client:
-        raise RuntimeError("Unofficial client not initialized")
-    client.unpin_task(task_id)
-
-
-def set_repeat_from(task_id: str, project_id: str, repeat_from: str) -> None:
-    """Set repeat from due date or completion date."""
-    client = get_client()
-    if not client:
-        raise RuntimeError("Unofficial client not initialized")
-    client.set_repeat_from(task_id, project_id, repeat_from)
