@@ -722,3 +722,56 @@ async def ticktick_make_subtask(
     except TickTickAPIError as e:
         logger.error(f"Failed to make subtask: {e}")
         return {"error": str(e), "status_code": e.status_code}
+
+
+@mcp.tool()
+async def ticktick_experimental_api_call(
+    endpoint: str,
+    method: str = "GET",
+    data: str | None = None,
+    params: str | None = None
+) -> dict[str, Any] | list:
+    """
+    Make a raw API call to TickTick's official OpenAPI for experimentation.
+
+    Use this to test and explore endpoints directly. The endpoint, method,
+    payload, and query params are all provided by the caller.
+
+    Note: Endpoints are relative to the base URL (https://api.ticktick.com/open/v1).
+    For example, use "/project" not "https://api.ticktick.com/open/v1/project".
+
+    Args:
+        endpoint: API path relative to base URL (e.g., "/project", "/task/{taskId}")
+        method: HTTP method - GET, POST, PUT, or DELETE
+        data: JSON string for the request body (POST/PUT). Must be valid JSON or null.
+        params: JSON string for query parameters. Must be valid JSON object or null.
+
+    Returns:
+        Raw API response or error dict
+    """
+    import json
+
+    logger.info(f"ticktick_experimental_api_call: {method} {endpoint}")
+
+    client = get_ticktick_client()
+    if not client:
+        return {
+            "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
+        }
+
+    try:
+        parsed_data = json.loads(data) if data else None
+        parsed_params = json.loads(params) if params else None
+
+        result = await client._request(method, endpoint, json=parsed_data, params=parsed_params)
+        logger.info(f"ticktick_experimental_api_call succeeded: {method} {endpoint}")
+        return result if result is not None else {"status": "success", "note": "Empty response (likely 204)"}
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in data or params: {e}")
+        return {"error": f"Invalid JSON: {e}"}
+    except TickTickAPIError as e:
+        logger.error(f"ticktick_experimental_api_call failed: {e}")
+        return {"error": str(e), "status_code": e.status_code}
+    except Exception as e:
+        logger.error(f"ticktick_experimental_api_call failed: {e}")
+        return {"error": str(e)}

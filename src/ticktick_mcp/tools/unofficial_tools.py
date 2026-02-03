@@ -231,46 +231,76 @@ def unofficial_get_all_data() -> dict[str, Any]:
         logger.error(f"Failed to get data: {e}")
         return {"error": str(e)}
 
-
 @mcp.tool()
-def unofficial_get_by_id(obj_id: str) -> dict[str, Any]:
+def unofficial_get_task(task_id: str) -> dict[str, Any]:
     """
-    Get any TickTick object by its ID via the unofficial API.
-
-    ALWAYS returns fresh data - no caching.
-    Searches through tasks, then projects to find the object.
+    Get a TickTick task by ID via the unofficial API.
+    
+    Unlike ticktick_get_task, this doesn't require the project ID
+    and returns full metadata including repeatFrom.
 
     Args:
-        obj_id: The ID of the object to retrieve
+        task_id: The task ID to retrieve
 
     Returns:
-        The object if found, or error dict
+        Task data or error dict
     """
-    logger.info(f"unofficial_get_by_id called for: {obj_id}")
+    logger.info(f"unofficial_get_task called for: {task_id}")
 
     try:
         client = _get_api_client()
-        data = _fetch_all_data(client)
+        task = client.call_api(f"/api/v2/task/{task_id}")
+        logger.info(f"Found task: {task_id}")
+        return task
 
-        # Try task first
-        tasks = data.get("syncTaskBean", {}).get("update", [])
-        for task in tasks:
-            if task.get("id") == obj_id:
-                logger.info(f"Found task with ID: {obj_id}")
-                return {"type": "task", "data": task}
-
-        # Try project
-        projects = data.get("projectProfiles", [])
-        for project in projects:
-            if project.get("id") == obj_id:
-                logger.info(f"Found project with ID: {obj_id}")
-                return {"type": "project", "data": project}
-
-        logger.info(f"No object found with ID: {obj_id}")
-        return {"error": f"No object found with ID: {obj_id}"}
-    except Exception as e:
-        logger.error(f"Failed to get object by ID: {e}")
+    except RuntimeError as e:
+        if "task_not_found" in str(e):
+            return {"error": f"Task not found: {task_id}"}
+        logger.error(f"Failed to get task: {e}")
         return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"Failed to get task: {e}")
+        return {"error": str(e)}
+    
+# @mcp.tool()
+# def unofficial_get_by_id(obj_id: str) -> dict[str, Any]:
+#     """
+#     Get any TickTick object by its ID via the unofficial API.
+
+#     ALWAYS returns fresh data - no caching.
+#     Searches through tasks, then projects to find the object.
+
+#     Args:
+#         obj_id: The ID of the object to retrieve
+
+#     Returns:
+#         The object if found, or error dict
+#     """
+#     logger.info(f"unofficial_get_by_id called for: {obj_id}")
+
+#     try:
+#         client = _get_api_client()
+#         data = _fetch_all_data(client)
+
+#         # Try task first
+#         tasks = data.get("syncTaskBean", {}).get("update", [])
+#         for task in tasks:
+#             if task.get("id") == obj_id:
+#                 logger.info(f"Found task with ID: {obj_id}")
+#                 return {"type": "task", "data": task}
+
+#         # Try project
+#         projects = data.get("projectProfiles", [])
+#         for project in projects:
+#             if project.get("id") == obj_id:
+#                 logger.info(f"Found project with ID: {obj_id}")
+#                 return {"type": "project", "data": project}
+
+#         logger.info(f"No object found with ID: {obj_id}")
+#         return {"error": f"No object found with ID: {obj_id}"}
+#     except Exception as e:
+#         logger.error(f"Failed to get object by ID: {e}")
+#         return {"error": str(e)}
 
 
 @mcp.tool()
