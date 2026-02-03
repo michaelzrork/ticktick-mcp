@@ -197,6 +197,45 @@ class UnofficialAPIClient:
         """Get the inbox project ID."""
         return self._inbox_id
     
+    # ==================== Generic API Call ====================
+
+    def call_api(
+        self,
+        endpoint: str,
+        method: str = "GET",
+        data: dict | None = None,
+        params: dict | None = None
+    ) -> dict | list:
+        """
+        Make a generic API call to TickTick.
+
+        Args:
+            endpoint: API endpoint path (e.g., "/api/v2/batch/task")
+            method: HTTP method (GET, POST, PUT, DELETE)
+            data: Request body as JSON (for POST/PUT)
+            params: Query string parameters
+
+        Returns:
+            Response JSON
+        """
+        url = f"https://api.ticktick.com{endpoint}"
+
+        if method == "GET":
+            response = self.client.get(url, params=params)
+        elif method == "POST":
+            response = self.client.post(url, json=data)
+        elif method == "PUT":
+            response = self.client.put(url, json=data)
+        elif method == "DELETE":
+            response = self.client.delete(url)
+        else:
+            raise ValueError(f"Unsupported method: {method}")
+
+        if response.status_code != 200:
+            raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
+
+        return response.json() if response.content else {"status": "success"}
+
     # ==================== Data Fetch Operations (FRESH - NO CACHE) ====================
     
     def sync(self) -> dict:

@@ -32,7 +32,7 @@ def _get_api_client() -> UnofficialAPIClient:
 
 
 @mcp.tool()
-def ticktick_get_task_activity(task_id: str) -> dict[str, Any] | list[dict]:
+def unofficial_get_task_activity(task_id: str) -> dict[str, Any] | list[dict]:
     """
     Get the activity log for a specific task.
 
@@ -51,7 +51,7 @@ def ticktick_get_task_activity(task_id: str) -> dict[str, Any] | list[dict]:
     Returns:
         List of activity entries or error dict
     """
-    logger.info(f"ticktick_get_task_activity called for task: {task_id}")
+    logger.info(f"unofficial_get_task_activity called for task: {task_id}")
 
     try:
         client = _get_api_client()
@@ -64,7 +64,7 @@ def ticktick_get_task_activity(task_id: str) -> dict[str, Any] | list[dict]:
 
 
 @mcp.tool()
-def ticktick_pin_task(task_id: str) -> dict[str, Any]:
+def unofficial_pin_task(task_id: str) -> dict[str, Any]:
     """
     Pin a task to the top of the list.
 
@@ -76,7 +76,7 @@ def ticktick_pin_task(task_id: str) -> dict[str, Any]:
     Returns:
         Success message or error
     """
-    logger.info(f"ticktick_pin_task called for task: {task_id}")
+    logger.info(f"unofficial_pin_task called for task: {task_id}")
 
     try:
         client = _get_api_client()
@@ -89,7 +89,7 @@ def ticktick_pin_task(task_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def ticktick_unpin_task(task_id: str) -> dict[str, Any]:
+def unofficial_unpin_task(task_id: str) -> dict[str, Any]:
     """
     Unpin a task (remove from pinned list).
 
@@ -99,7 +99,7 @@ def ticktick_unpin_task(task_id: str) -> dict[str, Any]:
     Returns:
         Success message or error
     """
-    logger.info(f"ticktick_unpin_task called for task: {task_id}")
+    logger.info(f"unofficial_unpin_task called for task: {task_id}")
 
     try:
         client = _get_api_client()
@@ -112,7 +112,7 @@ def ticktick_unpin_task(task_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def ticktick_set_repeat_from(
+def unofficial_set_repeat_from(
     task_id: str,
     project_id: str,
     repeat_from: str
@@ -132,7 +132,7 @@ def ticktick_set_repeat_from(
     Returns:
         Success message or error
     """
-    logger.info(f"ticktick_set_repeat_from called: task={task_id}, repeat_from={repeat_from}")
+    logger.info(f"unofficial_set_repeat_from called: task={task_id}, repeat_from={repeat_from}")
 
     # Map user-friendly values to API values
     repeat_from_map = {
@@ -158,7 +158,7 @@ def ticktick_set_repeat_from(
 
 
 @mcp.tool()
-def ticktick_unofficial_get_all() -> dict[str, Any]:
+def unofficial_get_all_data() -> dict[str, Any]:
     """
     Get all data from TickTick via the unofficial API.
 
@@ -167,7 +167,7 @@ def ticktick_unofficial_get_all() -> dict[str, Any]:
     Returns:
         Dict with tasks, projects, tags counts and data
     """
-    logger.info("ticktick_unofficial_get_all called")
+    logger.info("unofficial_get_all_data called")
 
     try:
         client = _get_api_client()
@@ -193,7 +193,7 @@ def ticktick_unofficial_get_all() -> dict[str, Any]:
 
 
 @mcp.tool()
-def ticktick_get_by_id(obj_id: str) -> dict[str, Any]:
+def unofficial_get_by_id(obj_id: str) -> dict[str, Any]:
     """
     Get any TickTick object by its ID via the unofficial API.
 
@@ -206,7 +206,7 @@ def ticktick_get_by_id(obj_id: str) -> dict[str, Any]:
     Returns:
         The object if found, or error dict
     """
-    logger.info(f"ticktick_get_by_id called for: {obj_id}")
+    logger.info(f"unofficial_get_by_id called for: {obj_id}")
 
     try:
         client = _get_api_client()
@@ -231,7 +231,7 @@ def ticktick_get_by_id(obj_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def ticktick_get_all(
+def unofficial_get_all(
     obj_type: Literal["tasks", "projects", "tags"]
 ) -> dict[str, Any] | list[dict]:
     """
@@ -245,7 +245,7 @@ def ticktick_get_all(
     Returns:
         List of objects or error dict
     """
-    logger.info(f"ticktick_get_all called for type: {obj_type}")
+    logger.info(f"unofficial_get_all called for type: {obj_type}")
 
     try:
         client = _get_api_client()
@@ -267,7 +267,7 @@ def ticktick_get_all(
 
 
 @mcp.tool()
-def ticktick_get_tasks_from_project(
+def unofficial_get_tasks_from_project(
     project_id: str,
     include_completed: bool = False
 ) -> dict[str, Any] | list[dict]:
@@ -283,7 +283,7 @@ def ticktick_get_tasks_from_project(
     Returns:
         List of tasks or error dict
     """
-    logger.info(f"ticktick_get_tasks_from_project called for project: {project_id}")
+    logger.info(f"unofficial_get_tasks_from_project called for project: {project_id}")
 
     try:
         client = _get_api_client()
@@ -307,7 +307,7 @@ def ticktick_get_tasks_from_project(
 
 
 @mcp.tool()
-def ticktick_unofficial_create_task(
+def unofficial_create_task(
     title: str,
     project_id: str,
     content: str | None = None,
@@ -331,7 +331,7 @@ def ticktick_unofficial_create_task(
     Returns:
         Created task or error
     """
-    logger.info(f"ticktick_unofficial_create_task called: title={title}, project={project_id}")
+    logger.info(f"unofficial_create_task called: title={title}, project={project_id}")
 
     try:
         client = _get_api_client()
@@ -352,7 +352,7 @@ def ticktick_unofficial_create_task(
 
 
 @mcp.tool()
-def ticktick_unofficial_update_task(
+def unofficial_update_task(
     task_id: str,
     title: str | None = None,
     content: str | None = None,
@@ -376,7 +376,7 @@ def ticktick_unofficial_update_task(
     Returns:
         Updated task or error
     """
-    logger.info(f"ticktick_unofficial_update_task called for task: {task_id}")
+    logger.info(f"unofficial_update_task called for task: {task_id}")
 
     try:
         client = _get_api_client()
@@ -410,7 +410,7 @@ def ticktick_unofficial_update_task(
 
 
 @mcp.tool()
-def ticktick_unofficial_delete_task(task_id: str) -> dict[str, Any]:
+def unofficial_delete_task(task_id: str) -> dict[str, Any]:
     """
     Delete a task via the unofficial API.
 
@@ -420,7 +420,7 @@ def ticktick_unofficial_delete_task(task_id: str) -> dict[str, Any]:
     Returns:
         Success message or error
     """
-    logger.info(f"ticktick_unofficial_delete_task called for task: {task_id}")
+    logger.info(f"unofficial_delete_task called for task: {task_id}")
 
     try:
         client = _get_api_client()
@@ -443,7 +443,7 @@ def ticktick_unofficial_delete_task(task_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def ticktick_unofficial_complete_task(task_id: str) -> dict[str, Any]:
+def unofficial_complete_task(task_id: str) -> dict[str, Any]:
     """
     Mark a task as complete via the unofficial API.
 
@@ -453,7 +453,7 @@ def ticktick_unofficial_complete_task(task_id: str) -> dict[str, Any]:
     Returns:
         Success message or error
     """
-    logger.info(f"ticktick_unofficial_complete_task called for task: {task_id}")
+    logger.info(f"unofficial_complete_task called for task: {task_id}")
 
     try:
         client = _get_api_client()
@@ -476,7 +476,7 @@ def ticktick_unofficial_complete_task(task_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def ticktick_unofficial_move_task(task_id: str, to_project_id: str) -> dict[str, Any]:
+def unofficial_move_task(task_id: str, to_project_id: str) -> dict[str, Any]:
     """
     Move a task to a different project via the unofficial API.
 
@@ -487,7 +487,7 @@ def ticktick_unofficial_move_task(task_id: str, to_project_id: str) -> dict[str,
     Returns:
         Updated task or error
     """
-    logger.info(f"ticktick_unofficial_move_task called: task={task_id}, to_project={to_project_id}")
+    logger.info(f"unofficial_move_task called: task={task_id}, to_project={to_project_id}")
 
     try:
         client = _get_api_client()
@@ -513,7 +513,7 @@ def ticktick_unofficial_move_task(task_id: str, to_project_id: str) -> dict[str,
 
 
 @mcp.tool()
-def ticktick_unofficial_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str, Any]:
+def unofficial_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str, Any]:
     """
     Make one task a subtask of another via the unofficial API.
 
@@ -526,7 +526,7 @@ def ticktick_unofficial_make_subtask(child_task_id: str, parent_task_id: str) ->
     Returns:
         Success message or error
     """
-    logger.info(f"ticktick_unofficial_make_subtask called: child={child_task_id}, parent={parent_task_id}")
+    logger.info(f"unofficial_make_subtask called: child={child_task_id}, parent={parent_task_id}")
 
     try:
         client = _get_api_client()
@@ -542,91 +542,31 @@ def ticktick_unofficial_make_subtask(child_task_id: str, parent_task_id: str) ->
         return {"error": str(e)}
 
 
-# ==================== Legacy Tool Aliases ====================
-# These provide backwards compatibility with legacy_ prefixed names
+# ==================== TEST: call_api() refactor ====================
 
 
 @mcp.tool()
-def legacy_ticktick_get_by_id(obj_id: str) -> dict[str, Any]:
-    """Alias for ticktick_get_by_id. Get any object by ID (fresh from API)."""
-    return ticktick_get_by_id(obj_id)
+def unofficial_test_call_api_get_activity(task_id: str) -> dict[str, Any] | list[dict]:
+    """
+    TEST: Get task activity using the new call_api method.
 
+    This duplicates unofficial_get_task_activity to validate the call_api refactor.
+    Delete this tool once refactor is confirmed working.
 
-@mcp.tool()
-def legacy_ticktick_get_all(obj_type: Literal["tasks", "projects", "tags"]) -> dict[str, Any] | list[dict]:
-    """Alias for ticktick_get_all. Get all objects of a type (fresh from API)."""
-    return ticktick_get_all(obj_type)
+    Args:
+        task_id: The task ID
 
+    Returns:
+        List of activity entries or error dict
+    """
+    logger.info(f"unofficial_test_call_api_get_activity called for task: {task_id}")
 
-@mcp.tool()
-def legacy_ticktick_get_tasks_from_project(project_id: str) -> dict[str, Any] | list[dict]:
-    """Alias for ticktick_get_tasks_from_project. Get tasks from a project (fresh from API)."""
-    return ticktick_get_tasks_from_project(project_id, include_completed=False)
-
-
-@mcp.tool()
-def legacy_ticktick_complete_task(task_id: str) -> dict[str, Any]:
-    """Alias for ticktick_unofficial_complete_task. Complete a task."""
-    return ticktick_unofficial_complete_task(task_id)
-
-
-@mcp.tool()
-def legacy_ticktick_move_task(task_id: str, to_project_id: str) -> dict[str, Any]:
-    """Alias for ticktick_unofficial_move_task. Move a task."""
-    return ticktick_unofficial_move_task(task_id, to_project_id)
-
-
-@mcp.tool()
-def legacy_ticktick_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str, Any]:
-    """Alias for ticktick_unofficial_make_subtask. Make a subtask."""
-    return ticktick_unofficial_make_subtask(child_task_id, parent_task_id)
-
-
-@mcp.tool()
-def legacy_ticktick_delete_task(task_id: str) -> dict[str, Any]:
-    """Alias for ticktick_unofficial_delete_task. Delete a task."""
-    return ticktick_unofficial_delete_task(task_id)
-
-
-@mcp.tool()
-def legacy_ticktick_create_task(
-    title: str,
-    project_id: str,
-    content: str | None = None,
-    start_date: str | None = None,
-    due_date: str | None = None,
-    priority: int = 0,
-    tags: list[str] | None = None
-) -> dict[str, Any]:
-    """Alias for ticktick_unofficial_create_task. Create a task."""
-    return ticktick_unofficial_create_task(
-        title=title,
-        project_id=project_id,
-        content=content,
-        start_date=start_date,
-        due_date=due_date,
-        priority=priority,
-        tags=tags
-    )
-
-
-@mcp.tool()
-def legacy_ticktick_update_task(
-    task_id: str,
-    title: str | None = None,
-    content: str | None = None,
-    start_date: str | None = None,
-    due_date: str | None = None,
-    priority: int | None = None,
-    tags: list[str] | None = None
-) -> dict[str, Any]:
-    """Alias for ticktick_unofficial_update_task. Update a task."""
-    return ticktick_unofficial_update_task(
-        task_id=task_id,
-        title=title,
-        content=content,
-        start_date=start_date,
-        due_date=due_date,
-        priority=priority,
-        tags=tags
-    )
+    try:
+        client = _get_api_client()
+        endpoint = f"/api/v1/task/activity/{task_id}"
+        activities = client.call_api(endpoint, method="GET")
+        logger.info(f"Got {len(activities)} activity entries via call_api")
+        return activities
+    except Exception as e:
+        logger.error(f"Failed to get task activity via call_api: {e}")
+        return {"error": str(e)}
