@@ -3,7 +3,7 @@ MCP Tools for unofficial TickTick API features.
 
 These tools use direct API calls to unofficial v2 endpoints:
 - Pin/unpin tasks
-- Set repeatFrom (repeat from due date vs completion date)
+- Recurrence patterns (RRULE, ERULE for specific dates, repeatFrom)
 - Task activity logs
 - Full CRUD operations via unofficial API
 - Fresh data fetches (no caching!)
@@ -12,7 +12,6 @@ Requires TICKTICK_USERNAME and TICKTICK_PASSWORD environment variables.
 """
 
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -26,10 +25,9 @@ logger = logging.getLogger(__name__)
 
 BATCH_CHECK = "/api/v2/batch/check/0"
 BATCH_TASK = "/api/v2/batch/task"
-BATCH_TASK_PIN = "/api/v2/batch/taskPin"
+BATCH_TASK_PROJECT = "/api/v2/batch/taskProject"
 TASK_ACTIVITY = "/api/v1/task/activity/{task_id}"
 TASK_BY_ID = "/api/v2/task/{task_id}"
-BATCH_TASK_PROJECT = "/api/v2/batch/taskProject" 
 
 
 # ==================== Helpers ====================
@@ -58,6 +56,18 @@ def _get_task_by_id(client: UnofficialAPIClient, task_id: str) -> dict | None:
         if task.get("id") == task_id:
             return task
     return None
+
+
+def _normalize_repeat_from(value: str | None) -> str | None:
+    """Convert friendly repeat_from names to API values."""
+    if value is None:
+        return None
+    normalized = value.lower().replace(" ", "_").replace("-", "_")
+    if normalized in ("completion_date", "completion", "1"):
+        return "1"
+    elif normalized in ("due_date", "due", "0"):
+        return "0"
+    return value  # Pass through if already "0" or "1"
 
 
 # ==================== Activity & Pin Tools ====================
@@ -95,7 +105,6 @@ def unofficial_get_task_activity(task_id: str) -> dict[str, Any] | list[dict]:
         logger.error(f"Failed to get task activity: {e}")
         return {"error": str(e)}
 
-from datetime import datetime, timezone
 
 @mcp.tool()
 def unofficial_pin_task(task_id: str) -> dict[str, Any]:
@@ -114,23 +123,23 @@ def unofficial_pin_task(task_id: str) -> dict[str, Any]:
 
     try:
         client = _get_api_client()
-        
-        # Fetch the task first
+
+        # Fetch the FULL task first (critical - partial updates strip fields!)
         task = client.call_api(f"/api/v2/task/{task_id}")
         if not task:
             return {"error": f"Task not found: {task_id}"}
-        
+
         # Set pinnedTime to current timestamp
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
         task["pinnedTime"] = now
-        
-        # Update via batch endpoint
+
+        # Send the FULL task back
         payload = {"add": [], "update": [task], "delete": []}
         result = client.call_api(BATCH_TASK, method="POST", data=payload)
-        
+
         if isinstance(result, dict) and result.get("id2error", {}).get(task_id):
             return {"error": f"Pin failed: {result['id2error'][task_id]}"}
-        
+
         logger.info(f"Successfully pinned task {task_id}")
         return {"success": True, "message": f"Task {task_id} pinned", "pinnedTime": now}
     except Exception as e:
@@ -153,128 +162,28 @@ def unofficial_unpin_task(task_id: str) -> dict[str, Any]:
 
     try:
         client = _get_api_client()
-        
-        # Fetch the task first
+
+        # Fetch the FULL task first (critical - partial updates strip fields!)
         task = client.call_api(f"/api/v2/task/{task_id}")
         if not task:
             return {"error": f"Task not found: {task_id}"}
-        
+
         # Set pinnedTime to "-1" to unpin
         task["pinnedTime"] = "-1"
-        
-        # Update via batch endpoint
+
+        # Send the FULL task back
         payload = {"add": [], "update": [task], "delete": []}
         result = client.call_api(BATCH_TASK, method="POST", data=payload)
-        
+
         if isinstance(result, dict) and result.get("id2error", {}).get(task_id):
             return {"error": f"Unpin failed: {result['id2error'][task_id]}"}
-        
+
         logger.info(f"Successfully unpinned task {task_id}")
         return {"success": True, "message": f"Task {task_id} unpinned"}
     except Exception as e:
         logger.error(f"Failed to unpin task: {e}")
         return {"error": str(e)}
 
-
-@mcp.tool()
-def unofficial_set_repeat_from(
-    task_id: str,
-    repeat_from: str
-) -> dict[str, Any]:
-    """
-    Set whether a repeating task repeats from due date or completion date.
-
-    This is only relevant for recurring tasks with a repeatFlag set.
-
-    Args:
-        task_id: The task ID
-        repeat_from: "due_date" or "completion_date"
-            - "due_date": Next occurrence calculated from the original due date
-            - "completion_date": Next occurrence calculated from when task was completed
-
-    Returns:
-        Success message or error
-    """
-    logger.info(f"unofficial_set_repeat_from called: task={task_id}, repeat_from={repeat_from}")
-
-    # Map user-friendly values to API values
-    repeat_from_map = {
-        "due_date": "0",
-        "completion_date": "1"
-    }
-
-    api_value = repeat_from_map.get(repeat_from.lower().replace(" ", "_"))
-    if not api_value:
-        return {"error": f"repeat_from must be 'due_date' or 'completion_date', got '{repeat_from}'"}
-
-    try:
-        client = _get_api_client()
-
-        # Fetch full task first to avoid wiping other fields
-        task = _get_task_by_id(client, task_id)
-        if not task:
-            return {"error": f"Task not found: {task_id}"}
-
-        task["repeatFrom"] = api_value
-
-        payload = {"add": [], "update": [task], "delete": []}
-        client.call_api(BATCH_TASK, method="POST", data=payload)
-        logger.info(f"Successfully set repeat_from for task {task_id}")
-        return {"success": True, "message": f"Task {task_id} set to repeat from {repeat_from}"}
-    except Exception as e:
-        logger.error(f"Failed to set repeat_from: {e}")
-        return {"error": str(e)}
-
-@mcp.tool()
-def unofficial_set_specific_dates(
-    task_id: str,
-    dates: list[str]
-) -> dict[str, Any]:
-    """
-    Set a task to repeat on specific dates.
-    
-    This replaces any existing recurrence pattern (RRULE) with specific dates (ERULE).
-    
-    Args:
-        task_id: The task ID
-        dates: List of dates in YYYY-MM-DD format (e.g., ["2026-02-05", "2026-02-10"])
-    
-    Returns:
-        Success message or error
-    """
-    logger.info(f"unofficial_set_specific_dates called: task={task_id}, dates={dates}")
-
-    if not dates:
-        return {"error": "At least one date is required"}
-
-    try:
-        client = _get_api_client()
-
-        # Fetch full task first
-        task = client.call_api(f"/api/v2/task/{task_id}")
-        if not task:
-            return {"error": f"Task not found: {task_id}"}
-
-        # Convert dates to YYYYMMDD format and sort
-        formatted_dates = sorted([d.replace("-", "") for d in dates])
-        erule = f"ERULE:NAME=CUSTOM;BYDATE={','.join(formatted_dates)}"
-        
-        # First date becomes repeatFirstDate
-        first_date = dates[0] if dates[0] <= min(dates) else min(dates)
-        first_date_iso = f"{first_date}T05:00:00.000+0000"
-
-        task["repeatFlag"] = erule
-        task["repeatFirstDate"] = first_date_iso
-        task["repeatFrom"] = "0"
-
-        payload = {"add": [], "update": [task], "delete": []}
-        client.call_api(BATCH_TASK, method="POST", data=payload)
-        
-        logger.info(f"Successfully set specific dates for task {task_id}")
-        return {"success": True, "message": f"Task {task_id} set to repeat on {len(dates)} specific dates", "dates": dates}
-    except Exception as e:
-        logger.error(f"Failed to set specific dates: {e}")
-        return {"error": str(e)}
 
 # ==================== Data Fetch Tools (FRESH - NO CACHE) ====================
 
@@ -314,11 +223,12 @@ def unofficial_get_all_data() -> dict[str, Any]:
         logger.error(f"Failed to get data: {e}")
         return {"error": str(e)}
 
+
 @mcp.tool()
 def unofficial_get_task(task_id: str) -> dict[str, Any]:
     """
     Get a TickTick task by ID via the unofficial API.
-    
+
     Unlike ticktick_get_task, this doesn't require the project ID
     and returns full metadata including repeatFrom.
 
@@ -344,46 +254,6 @@ def unofficial_get_task(task_id: str) -> dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to get task: {e}")
         return {"error": str(e)}
-    
-# @mcp.tool()
-# def unofficial_get_by_id(obj_id: str) -> dict[str, Any]:
-#     """
-#     Get any TickTick object by its ID via the unofficial API.
-
-#     ALWAYS returns fresh data - no caching.
-#     Searches through tasks, then projects to find the object.
-
-#     Args:
-#         obj_id: The ID of the object to retrieve
-
-#     Returns:
-#         The object if found, or error dict
-#     """
-#     logger.info(f"unofficial_get_by_id called for: {obj_id}")
-
-#     try:
-#         client = _get_api_client()
-#         data = _fetch_all_data(client)
-
-#         # Try task first
-#         tasks = data.get("syncTaskBean", {}).get("update", [])
-#         for task in tasks:
-#             if task.get("id") == obj_id:
-#                 logger.info(f"Found task with ID: {obj_id}")
-#                 return {"type": "task", "data": task}
-
-#         # Try project
-#         projects = data.get("projectProfiles", [])
-#         for project in projects:
-#             if project.get("id") == obj_id:
-#                 logger.info(f"Found project with ID: {obj_id}")
-#                 return {"type": "project", "data": project}
-
-#         logger.info(f"No object found with ID: {obj_id}")
-#         return {"error": f"No object found with ID: {obj_id}"}
-#     except Exception as e:
-#         logger.error(f"Failed to get object by ID: {e}")
-#         return {"error": str(e)}
 
 
 @mcp.tool()
@@ -465,200 +335,6 @@ def unofficial_get_tasks_from_project(
 # ==================== Task CRUD Tools (Direct API) ====================
 
 
-# @mcp.tool()
-# def unofficial_create_task(
-#     title: str,
-#     project_id: str,
-#     content: str | None = None,
-#     start_date: str | None = None,
-#     due_date: str | None = None,
-#     priority: int = 0,
-#     tags: list[str] | None = None
-# ) -> dict[str, Any]:
-#     """
-#     Create a new task via the unofficial API.
-
-#     Args:
-#         title: Task title (required)
-#         project_id: Project ID to create task in (required)
-#         content: Task description/notes
-#         start_date: Start date in ISO format (e.g., "2024-01-31T09:00:00")
-#         due_date: Due date in ISO format
-#         priority: Priority (0=None, 1=Low, 3=Medium, 5=High)
-#         tags: List of tag names
-
-#     Returns:
-#         Created task or error
-#     """
-#     logger.info(f"unofficial_create_task called: title={title}, project={project_id}")
-
-#     try:
-#         client = _get_api_client()
-
-#         task_id = uuid.uuid4().hex[:24]
-#         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-
-#         task = {
-#             "id": task_id,
-#             "projectId": project_id,
-#             "title": title,
-#             "priority": priority,
-#             "status": 0,
-#             "createdTime": now,
-#             "modifiedTime": now,
-#         }
-#         if content:
-#             task["content"] = content
-#         if start_date:
-#             task["startDate"] = start_date
-#         if due_date:
-#             task["dueDate"] = due_date
-#         if tags:
-#             task["tags"] = tags
-
-#         payload = {"add": [task], "update": [], "delete": []}
-#         result = client.call_api(BATCH_TASK, method="POST", data=payload)
-
-#         # Extract etag from response
-#         if isinstance(result, dict):
-#             id_map = result.get("id2etag", {})
-#             if task_id in id_map:
-#                 task["etag"] = id_map[task_id]
-
-#         logger.info(f"Successfully created task: {task_id}")
-#         return {"success": True, "task": task}
-#     except Exception as e:
-#         logger.error(f"Failed to create task: {e}")
-#         return {"error": str(e)}
-
-
-# @mcp.tool()
-# def unofficial_update_task(
-#     task_id: str,
-#     title: str | None = None,
-#     content: str | None = None,
-#     start_date: str | None = None,
-#     due_date: str | None = None,
-#     priority: int | None = None,
-#     tags: list[str] | None = None
-# ) -> dict[str, Any]:
-#     """
-#     Update an existing task via the unofficial API.
-
-#     Args:
-#         task_id: The task ID to update (required)
-#         title: New task title
-#         content: New task description/notes
-#         start_date: New start date in ISO format
-#         due_date: New due date in ISO format
-#         priority: New priority (0=None, 1=Low, 3=Medium, 5=High)
-#         tags: New list of tag names
-
-#     Returns:
-#         Updated task or error
-#     """
-#     logger.info(f"unofficial_update_task called for task: {task_id}")
-
-#     try:
-#         client = _get_api_client()
-
-#         # Get the task first (fresh from API)
-#         task = _get_task_by_id(client, task_id)
-#         if not task:
-#             return {"error": f"Task not found: {task_id}"}
-
-#         # Update fields
-#         if title is not None:
-#             task["title"] = title
-#         if content is not None:
-#             task["content"] = content
-#         if start_date is not None:
-#             task["startDate"] = start_date
-#         if due_date is not None:
-#             task["dueDate"] = due_date
-#         if priority is not None:
-#             task["priority"] = priority
-#         if tags is not None:
-#             task["tags"] = tags
-
-#         # Save updates
-#         payload = {"add": [], "update": [task], "delete": []}
-#         result = client.call_api(BATCH_TASK, method="POST", data=payload)
-
-#         # Extract etag from response
-#         if isinstance(result, dict):
-#             id_map = result.get("id2etag", {})
-#             if task_id in id_map:
-#                 task["etag"] = id_map[task_id]
-
-#         logger.info(f"Successfully updated task {task_id}")
-#         return {"success": True, "task": task}
-#     except Exception as e:
-#         logger.error(f"Failed to update task: {e}")
-#         return {"error": str(e)}
-
-@mcp.tool()
-def unofficial_update_task(
-    task_id: str,
-    title: str | None = None,
-    content: str | None = None,
-    start_date: str | None = None,
-    due_date: str | None = None,
-    priority: int | None = None,
-    status: int | None = None,           # NEW: 0=incomplete, 2=complete
-    tags: list[str] | None = None,
-    repeat_flag: str | None = None,      # NEW: RRULE string
-    repeat_from: str | None = None,      # NEW: "0"=due date, "1"=completion date
-) -> dict[str, Any]:
-    """
-    Update an existing task via the unofficial API.
-    Works for both completed and incomplete tasks.
-    """
-    logger.info(f"unofficial_update_task called for task: {task_id}")
-
-    try:
-        client = _get_api_client()
-
-        # Direct fetch - works for completed AND incomplete tasks
-        task = client.call_api(f"/api/v2/task/{task_id}")
-        if not task:
-            return {"error": f"Task not found: {task_id}"}
-
-        # Update fields (only if provided)
-        if title is not None:
-            task["title"] = title
-        if content is not None:
-            task["content"] = content
-        if start_date is not None:
-            task["startDate"] = start_date
-        if due_date is not None:
-            task["dueDate"] = due_date
-        if priority is not None:
-            task["priority"] = priority
-        if status is not None:
-            task["status"] = status
-            if status == 0:
-                task["completedTime"] = None
-        if tags is not None:
-            task["tags"] = tags
-        if repeat_flag is not None:
-            task["repeatFlag"] = repeat_flag
-        if repeat_from is not None:
-            task["repeatFrom"] = repeat_from
-
-        # Save via batch endpoint
-        payload = {"add": [], "update": [task], "delete": []}
-        result = client.call_api(BATCH_TASK, method="POST", data=payload)
-
-        if isinstance(result, dict) and task_id in result.get("id2etag", {}):
-            task["etag"] = result["id2etag"][task_id]
-
-        return {"success": True, "task": task}
-    except Exception as e:
-        logger.error(f"Failed to update task: {e}")
-        return {"error": str(e)}
-
-
 @mcp.tool()
 def unofficial_create_task(
     title: str,
@@ -668,14 +344,60 @@ def unofficial_create_task(
     due_date: str | None = None,
     priority: int = 0,
     tags: list[str] | None = None,
-    is_all_day: bool = True,             # NEW: explicit control
-    repeat_flag: str | None = None,      # NEW: RRULE string
-    repeat_from: str | None = None,      # NEW: "0"=due date, "1"=completion date
+    is_all_day: bool = True,
+    repeat_flag: str | None = None,
+    repeat_from: str | None = None,
+    specific_dates: list[str] | None = None,
     time_zone: str = "America/New_York",
 ) -> dict[str, Any]:
     """
     Create a new task via the unofficial API.
-    Supports all fields including repeatFrom.
+
+    Supports all fields including recurrence patterns that the official API cannot set.
+
+    Args:
+        title: Task title (required)
+        project_id: Project ID (required). Use "inbox{userId}" for Inbox.
+        content: Task content/notes
+        start_date: Start date (e.g., "2026-01-31T21:00:00"). Timezone offset auto-added.
+        due_date: Due date (e.g., "2026-01-31T21:00:00"). Required for recurring tasks.
+        priority: Priority level (0=None, 1=Low, 3=Medium, 5=High)
+        tags: List of tags
+        is_all_day: Whether it's an all-day task (default: True)
+        repeat_flag: Recurrence rule (RRULE format). Examples:
+            - "RRULE:FREQ=DAILY;INTERVAL=1" = Every day
+            - "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR" = Mon/Wed/Fri
+            - "RRULE:FREQ=MONTHLY;BYMONTHDAY=15" = 15th of each month
+        repeat_from: When to calculate next occurrence (only for recurring tasks):
+            - "due_date" or "0" = From the due date (default)
+            - "completion_date" or "1" = From when task was completed
+        specific_dates: List of specific dates in YYYY-MM-DD format.
+            If provided, creates an ERULE instead of RRULE (overrides repeat_flag).
+            Example: ["2026-02-05", "2026-02-10", "2026-02-15"]
+        time_zone: Timezone (e.g., "America/New_York")
+
+    Returns:
+        Created task details
+
+    Examples:
+        # Simple task
+        unofficial_create_task(title="Buy groceries", project_id="abc123")
+
+        # Recurring task that repeats from completion date
+        unofficial_create_task(
+            title="Water plants",
+            project_id="abc123",
+            due_date="2026-02-01T09:00:00",
+            repeat_flag="RRULE:FREQ=DAILY;INTERVAL=3",
+            repeat_from="completion_date"
+        )
+
+        # Task on specific dates
+        unofficial_create_task(
+            title="Take medication",
+            project_id="abc123",
+            specific_dates=["2026-02-05", "2026-02-10", "2026-02-15"]
+        )
     """
     logger.info(f"unofficial_create_task: {title}")
 
@@ -699,10 +421,18 @@ def unofficial_create_task(
             task["dueDate"] = due_date
         if tags:
             task["tags"] = tags
-        if repeat_flag:
+
+        # Handle specific dates (ERULE) - takes precedence over repeat_flag
+        if specific_dates:
+            formatted_dates = sorted([d.replace("-", "") for d in specific_dates])
+            task["repeatFlag"] = f"ERULE:NAME=CUSTOM;BYDATE={','.join(formatted_dates)}"
+            first_date = min(specific_dates)
+            task["repeatFirstDate"] = f"{first_date}T05:00:00.000+0000"
+            task["repeatFrom"] = "0"
+        elif repeat_flag:
             task["repeatFlag"] = repeat_flag
-        if repeat_from:
-            task["repeatFrom"] = repeat_from
+            if repeat_from:
+                task["repeatFrom"] = _normalize_repeat_from(repeat_from)
 
         payload = {"add": [task], "update": [], "delete": []}
         result = client.call_api(BATCH_TASK, method="POST", data=payload)
@@ -718,6 +448,128 @@ def unofficial_create_task(
     except Exception as e:
         logger.error(f"Failed to create task: {e}")
         return {"error": str(e)}
+
+
+@mcp.tool()
+def unofficial_update_task(
+    task_id: str,
+    title: str | None = None,
+    content: str | None = None,
+    start_date: str | None = None,
+    due_date: str | None = None,
+    priority: int | None = None,
+    status: int | None = None,
+    tags: list[str] | None = None,
+    repeat_flag: str | None = None,
+    repeat_from: str | None = None,
+    specific_dates: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Update an existing task via the unofficial API.
+
+    Works for both completed and incomplete tasks. Can update fields the official
+    API cannot, including recurrence patterns and task status.
+
+    Args:
+        task_id: Task ID to update (required)
+        title: New task title
+        content: New task content/notes
+        start_date: New start date
+        due_date: New due date
+        priority: New priority (0=None, 1=Low, 3=Medium, 5=High)
+        status: Task status:
+            - 0 = Incomplete (use this to UN-COMPLETE a completed task)
+            - 2 = Complete
+        tags: New tags list (replaces existing tags)
+        repeat_flag: New recurrence rule (RRULE format). Examples:
+            - "RRULE:FREQ=DAILY;INTERVAL=1" = Every day
+            - "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR" = Mon/Wed/Fri
+            - "RRULE:FREQ=MONTHLY;BYMONTHDAY=15" = 15th of each month
+        repeat_from: When to calculate next occurrence:
+            - "due_date" or "0" = From the due date
+            - "completion_date" or "1" = From when task was completed
+        specific_dates: List of specific dates in YYYY-MM-DD format.
+            If provided, replaces any existing recurrence with an ERULE.
+            Example: ["2026-02-05", "2026-02-10", "2026-02-15"]
+
+    Returns:
+        Updated task details
+
+    Examples:
+        # Un-complete a task
+        unofficial_update_task(task_id="abc123", status=0)
+
+        # Change recurrence to repeat from completion date
+        unofficial_update_task(task_id="abc123", repeat_from="completion_date")
+
+        # Set specific dates recurrence
+        unofficial_update_task(task_id="abc123", specific_dates=["2026-03-01", "2026-03-15"])
+
+        # Add a weekly recurrence to an existing task
+        unofficial_update_task(
+            task_id="abc123",
+            due_date="2026-02-10T09:00:00",
+            repeat_flag="RRULE:FREQ=WEEKLY;INTERVAL=1"
+        )
+    """
+    logger.info(f"unofficial_update_task called for task: {task_id}")
+
+    try:
+        client = _get_api_client()
+
+        # Direct fetch - works for completed AND incomplete tasks
+        task = client.call_api(f"/api/v2/task/{task_id}")
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        # Update fields (only if provided)
+        if title is not None:
+            task["title"] = title
+        if content is not None:
+            task["content"] = content
+        if start_date is not None:
+            task["startDate"] = start_date
+        if due_date is not None:
+            task["dueDate"] = due_date
+        if priority is not None:
+            task["priority"] = priority
+        if tags is not None:
+            task["tags"] = tags
+
+        # Handle status change (including un-completing)
+        if status is not None:
+            task["status"] = status
+            if status == 0:
+                task["completedTime"] = None
+
+        # Handle specific dates (ERULE) - takes precedence
+        if specific_dates is not None:
+            formatted_dates = sorted([d.replace("-", "") for d in specific_dates])
+            task["repeatFlag"] = f"ERULE:NAME=CUSTOM;BYDATE={','.join(formatted_dates)}"
+            first_date = min(specific_dates)
+            task["repeatFirstDate"] = f"{first_date}T05:00:00.000+0000"
+            task["repeatFrom"] = "0"
+        else:
+            # Handle repeat_flag update
+            if repeat_flag is not None:
+                task["repeatFlag"] = repeat_flag
+
+            # Handle repeat_from with friendly names
+            if repeat_from is not None:
+                task["repeatFrom"] = _normalize_repeat_from(repeat_from)
+
+        # Save via batch endpoint
+        payload = {"add": [], "update": [task], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        if isinstance(result, dict) and task_id in result.get("id2etag", {}):
+            task["etag"] = result["id2etag"][task_id]
+
+        return {"success": True, "task": task}
+    except Exception as e:
+        logger.error(f"Failed to update task: {e}")
+        return {"error": str(e)}
+
 
 @mcp.tool()
 def unofficial_delete_task(task_id: str) -> dict[str, Any]:
@@ -864,8 +716,8 @@ def unofficial_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str
 def unofficial_experimental_api_call(
     endpoint: str,
     method: str = "GET",
-    data: dict | None = None,  # Changed from str | None
-    params: dict | None = None  # Changed from str | None
+    data: dict | list | None = None,
+    params: dict | None = None
 ) -> dict[str, Any] | list[dict]:
     """
     Make a raw API call to TickTick's unofficial API for experimentation.
@@ -873,7 +725,7 @@ def unofficial_experimental_api_call(
     Args:
         endpoint: API path (e.g., "/api/v2/batch/task")
         method: HTTP method - GET, POST, PUT, or DELETE
-        data: JSON object for the request body (POST/PUT)
+        data: JSON object or array for the request body (POST/PUT)
         params: JSON object for query parameters
 
     Returns:
@@ -883,8 +735,7 @@ def unofficial_experimental_api_call(
 
     try:
         client = _get_api_client()
-        
-        # No need to parse - already dicts
+
         result = client.call_api(endpoint, method=method, data=data, params=params)
         logger.info(f"unofficial_experimental_api_call succeeded: {method} {endpoint}")
         return result
