@@ -658,41 +658,30 @@ def unofficial_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str
 def unofficial_experimental_api_call(
     endpoint: str,
     method: str = "GET",
-    data: str | None = None,
-    params: str | None = None
+    data: dict | None = None,  # Changed from str | None
+    params: dict | None = None  # Changed from str | None
 ) -> dict[str, Any] | list[dict]:
     """
     Make a raw API call to TickTick's unofficial API for experimentation.
 
-    Use this to test and explore endpoints directly. The endpoint, method,
-    payload, and query params are all provided by the caller.
-
     Args:
-        endpoint: API path (e.g., "/api/v2/batch/task", "/api/v1/task/activity/{id}")
+        endpoint: API path (e.g., "/api/v2/batch/task")
         method: HTTP method - GET, POST, PUT, or DELETE
-        data: JSON string for the request body (POST/PUT). Must be valid JSON or null.
-        params: JSON string for query parameters. Must be valid JSON object or null.
+        data: JSON object for the request body (POST/PUT)
+        params: JSON object for query parameters
 
     Returns:
         Raw API response or error dict
     """
-    import json
-
     logger.info(f"unofficial_experimental_api_call: {method} {endpoint}")
 
     try:
         client = _get_api_client()
-
-        parsed_data = json.loads(data) if data else None
-        parsed_params = json.loads(params) if params else None
-
-        result = client.call_api(endpoint, method=method, data=parsed_data, params=parsed_params)
+        
+        # No need to parse - already dicts
+        result = client.call_api(endpoint, method=method, data=data, params=params)
         logger.info(f"unofficial_experimental_api_call succeeded: {method} {endpoint}")
         return result
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON in data or params: {e}")
-        return {"error": f"Invalid JSON: {e}"}
     except Exception as e:
         logger.error(f"unofficial_experimental_api_call failed: {e}")
         return {"error": str(e)}
-
