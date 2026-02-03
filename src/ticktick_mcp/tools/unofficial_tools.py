@@ -382,72 +382,137 @@ def unofficial_get_tasks_from_project(
 # ==================== Task CRUD Tools (Direct API) ====================
 
 
-@mcp.tool()
-def unofficial_create_task(
-    title: str,
-    project_id: str,
-    content: str | None = None,
-    start_date: str | None = None,
-    due_date: str | None = None,
-    priority: int = 0,
-    tags: list[str] | None = None
-) -> dict[str, Any]:
-    """
-    Create a new task via the unofficial API.
+# @mcp.tool()
+# def unofficial_create_task(
+#     title: str,
+#     project_id: str,
+#     content: str | None = None,
+#     start_date: str | None = None,
+#     due_date: str | None = None,
+#     priority: int = 0,
+#     tags: list[str] | None = None
+# ) -> dict[str, Any]:
+#     """
+#     Create a new task via the unofficial API.
 
-    Args:
-        title: Task title (required)
-        project_id: Project ID to create task in (required)
-        content: Task description/notes
-        start_date: Start date in ISO format (e.g., "2024-01-31T09:00:00")
-        due_date: Due date in ISO format
-        priority: Priority (0=None, 1=Low, 3=Medium, 5=High)
-        tags: List of tag names
+#     Args:
+#         title: Task title (required)
+#         project_id: Project ID to create task in (required)
+#         content: Task description/notes
+#         start_date: Start date in ISO format (e.g., "2024-01-31T09:00:00")
+#         due_date: Due date in ISO format
+#         priority: Priority (0=None, 1=Low, 3=Medium, 5=High)
+#         tags: List of tag names
 
-    Returns:
-        Created task or error
-    """
-    logger.info(f"unofficial_create_task called: title={title}, project={project_id}")
+#     Returns:
+#         Created task or error
+#     """
+#     logger.info(f"unofficial_create_task called: title={title}, project={project_id}")
 
-    try:
-        client = _get_api_client()
+#     try:
+#         client = _get_api_client()
 
-        task_id = uuid.uuid4().hex[:24]
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+#         task_id = uuid.uuid4().hex[:24]
+#         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
 
-        task = {
-            "id": task_id,
-            "projectId": project_id,
-            "title": title,
-            "priority": priority,
-            "status": 0,
-            "createdTime": now,
-            "modifiedTime": now,
-        }
-        if content:
-            task["content"] = content
-        if start_date:
-            task["startDate"] = start_date
-        if due_date:
-            task["dueDate"] = due_date
-        if tags:
-            task["tags"] = tags
+#         task = {
+#             "id": task_id,
+#             "projectId": project_id,
+#             "title": title,
+#             "priority": priority,
+#             "status": 0,
+#             "createdTime": now,
+#             "modifiedTime": now,
+#         }
+#         if content:
+#             task["content"] = content
+#         if start_date:
+#             task["startDate"] = start_date
+#         if due_date:
+#             task["dueDate"] = due_date
+#         if tags:
+#             task["tags"] = tags
 
-        payload = {"add": [task], "update": [], "delete": []}
-        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+#         payload = {"add": [task], "update": [], "delete": []}
+#         result = client.call_api(BATCH_TASK, method="POST", data=payload)
 
-        # Extract etag from response
-        if isinstance(result, dict):
-            id_map = result.get("id2etag", {})
-            if task_id in id_map:
-                task["etag"] = id_map[task_id]
+#         # Extract etag from response
+#         if isinstance(result, dict):
+#             id_map = result.get("id2etag", {})
+#             if task_id in id_map:
+#                 task["etag"] = id_map[task_id]
 
-        logger.info(f"Successfully created task: {task_id}")
-        return {"success": True, "task": task}
-    except Exception as e:
-        logger.error(f"Failed to create task: {e}")
-        return {"error": str(e)}
+#         logger.info(f"Successfully created task: {task_id}")
+#         return {"success": True, "task": task}
+#     except Exception as e:
+#         logger.error(f"Failed to create task: {e}")
+#         return {"error": str(e)}
 
+
+# @mcp.tool()
+# def unofficial_update_task(
+#     task_id: str,
+#     title: str | None = None,
+#     content: str | None = None,
+#     start_date: str | None = None,
+#     due_date: str | None = None,
+#     priority: int | None = None,
+#     tags: list[str] | None = None
+# ) -> dict[str, Any]:
+#     """
+#     Update an existing task via the unofficial API.
+
+#     Args:
+#         task_id: The task ID to update (required)
+#         title: New task title
+#         content: New task description/notes
+#         start_date: New start date in ISO format
+#         due_date: New due date in ISO format
+#         priority: New priority (0=None, 1=Low, 3=Medium, 5=High)
+#         tags: New list of tag names
+
+#     Returns:
+#         Updated task or error
+#     """
+#     logger.info(f"unofficial_update_task called for task: {task_id}")
+
+#     try:
+#         client = _get_api_client()
+
+#         # Get the task first (fresh from API)
+#         task = _get_task_by_id(client, task_id)
+#         if not task:
+#             return {"error": f"Task not found: {task_id}"}
+
+#         # Update fields
+#         if title is not None:
+#             task["title"] = title
+#         if content is not None:
+#             task["content"] = content
+#         if start_date is not None:
+#             task["startDate"] = start_date
+#         if due_date is not None:
+#             task["dueDate"] = due_date
+#         if priority is not None:
+#             task["priority"] = priority
+#         if tags is not None:
+#             task["tags"] = tags
+
+#         # Save updates
+#         payload = {"add": [], "update": [task], "delete": []}
+#         result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+#         # Extract etag from response
+#         if isinstance(result, dict):
+#             id_map = result.get("id2etag", {})
+#             if task_id in id_map:
+#                 task["etag"] = id_map[task_id]
+
+#         logger.info(f"Successfully updated task {task_id}")
+#         return {"success": True, "task": task}
+#     except Exception as e:
+#         logger.error(f"Failed to update task: {e}")
+#         return {"error": str(e)}
 
 @mcp.tool()
 def unofficial_update_task(
@@ -457,34 +522,26 @@ def unofficial_update_task(
     start_date: str | None = None,
     due_date: str | None = None,
     priority: int | None = None,
-    tags: list[str] | None = None
+    status: int | None = None,           # NEW: 0=incomplete, 2=complete
+    tags: list[str] | None = None,
+    repeat_flag: str | None = None,      # NEW: RRULE string
+    repeat_from: str | None = None,      # NEW: "0"=due date, "1"=completion date
 ) -> dict[str, Any]:
     """
     Update an existing task via the unofficial API.
-
-    Args:
-        task_id: The task ID to update (required)
-        title: New task title
-        content: New task description/notes
-        start_date: New start date in ISO format
-        due_date: New due date in ISO format
-        priority: New priority (0=None, 1=Low, 3=Medium, 5=High)
-        tags: New list of tag names
-
-    Returns:
-        Updated task or error
+    Works for both completed and incomplete tasks.
     """
     logger.info(f"unofficial_update_task called for task: {task_id}")
 
     try:
         client = _get_api_client()
 
-        # Get the task first (fresh from API)
-        task = _get_task_by_id(client, task_id)
+        # Direct fetch - works for completed AND incomplete tasks
+        task = client.call_api(f"/api/v2/task/{task_id}")
         if not task:
             return {"error": f"Task not found: {task_id}"}
 
-        # Update fields
+        # Update fields (only if provided)
         if title is not None:
             task["title"] = title
         if content is not None:
@@ -495,25 +552,89 @@ def unofficial_update_task(
             task["dueDate"] = due_date
         if priority is not None:
             task["priority"] = priority
+        if status is not None:
+            task["status"] = status
+            if status == 0:
+                task["completedTime"] = None
         if tags is not None:
             task["tags"] = tags
+        if repeat_flag is not None:
+            task["repeatFlag"] = repeat_flag
+        if repeat_from is not None:
+            task["repeatFrom"] = repeat_from
 
-        # Save updates
+        # Save via batch endpoint
         payload = {"add": [], "update": [task], "delete": []}
         result = client.call_api(BATCH_TASK, method="POST", data=payload)
 
-        # Extract etag from response
-        if isinstance(result, dict):
-            id_map = result.get("id2etag", {})
-            if task_id in id_map:
-                task["etag"] = id_map[task_id]
+        if isinstance(result, dict) and task_id in result.get("id2etag", {}):
+            task["etag"] = result["id2etag"][task_id]
 
-        logger.info(f"Successfully updated task {task_id}")
         return {"success": True, "task": task}
     except Exception as e:
         logger.error(f"Failed to update task: {e}")
         return {"error": str(e)}
 
+
+@mcp.tool()
+def unofficial_create_task(
+    title: str,
+    project_id: str,
+    content: str | None = None,
+    start_date: str | None = None,
+    due_date: str | None = None,
+    priority: int = 0,
+    tags: list[str] | None = None,
+    is_all_day: bool = True,             # NEW: explicit control
+    repeat_flag: str | None = None,      # NEW: RRULE string
+    repeat_from: str | None = None,      # NEW: "0"=due date, "1"=completion date
+    time_zone: str = "America/New_York",
+) -> dict[str, Any]:
+    """
+    Create a new task via the unofficial API.
+    Supports all fields including repeatFrom.
+    """
+    logger.info(f"unofficial_create_task: {title}")
+
+    try:
+        client = _get_api_client()
+
+        task = {
+            "title": title,
+            "projectId": project_id,
+            "priority": priority,
+            "status": 0,
+            "timeZone": time_zone,
+            "isAllDay": is_all_day,
+        }
+
+        if content:
+            task["content"] = content
+        if start_date:
+            task["startDate"] = start_date
+        if due_date:
+            task["dueDate"] = due_date
+        if tags:
+            task["tags"] = tags
+        if repeat_flag:
+            task["repeatFlag"] = repeat_flag
+        if repeat_from:
+            task["repeatFrom"] = repeat_from
+
+        payload = {"add": [task], "update": [], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        if isinstance(result, dict):
+            id2etag = result.get("id2etag", {})
+            if id2etag:
+                task_id = list(id2etag.keys())[0]
+                task["id"] = task_id
+                task["etag"] = id2etag[task_id]
+
+        return {"success": True, "task": task}
+    except Exception as e:
+        logger.error(f"Failed to create task: {e}")
+        return {"error": str(e)}
 
 @mcp.tool()
 def unofficial_delete_task(task_id: str) -> dict[str, Any]:
