@@ -28,7 +28,6 @@ BATCH_CHECK = "/api/v2/batch/check/0"
 BATCH_TASK = "/api/v2/batch/task"
 BATCH_TASK_PIN = "/api/v2/batch/taskPin"
 TASK_ACTIVITY = "/api/v1/task/activity/{task_id}"
-TASK_COMPLETE = "/api/v2/project/{project_id}/task/{task_id}/complete"
 TASK_BY_ID = "/api/v2/task/{task_id}"
 
 
@@ -147,7 +146,6 @@ def unofficial_unpin_task(task_id: str) -> dict[str, Any]:
 @mcp.tool()
 def unofficial_set_repeat_from(
     task_id: str,
-    project_id: str,
     repeat_from: str
 ) -> dict[str, Any]:
     """
@@ -157,7 +155,6 @@ def unofficial_set_repeat_from(
 
     Args:
         task_id: The task ID
-        project_id: The project ID containing the task
         repeat_from: "due_date" or "completion_date"
             - "due_date": Next occurrence calculated from the original due date
             - "completion_date": Next occurrence calculated from when task was completed
@@ -179,9 +176,16 @@ def unofficial_set_repeat_from(
 
     try:
         client = _get_api_client()
-        endpoint = TASK_BY_ID.format(task_id=task_id)
-        payload = {"id": task_id, "projectId": project_id, "repeatFrom": api_value}
-        client.call_api(endpoint, method="POST", data=payload)
+
+        # Fetch full task first to avoid wiping other fields
+        task = _get_task_by_id(client, task_id)
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        task["repeatFrom"] = api_value
+
+        payload = {"add": [], "update": [task], "delete": []}
+        client.call_api(BATCH_TASK, method="POST", data=payload)
         logger.info(f"Successfully set repeat_from for task {task_id}")
         return {"success": True, "message": f"Task {task_id} set to repeat from {repeat_from}"}
     except Exception as e:
@@ -515,38 +519,6 @@ def unofficial_delete_task(task_id: str) -> dict[str, Any]:
         return {"error": str(e)}
 
 
-@mcp.tool()
-def unofficial_complete_task(task_id: str) -> dict[str, Any]:
-    """
-    Mark a task as complete via the unofficial API.
-
-    Args:
-        task_id: The task ID to complete
-
-    Returns:
-        Success message or error
-    """
-    logger.info(f"unofficial_complete_task called for task: {task_id}")
-
-    try:
-        client = _get_api_client()
-
-        # Get the task first to find its project (fresh from API)
-        task = _get_task_by_id(client, task_id)
-        if not task:
-            return {"error": f"Task not found: {task_id}"}
-
-        project_id = task.get("projectId")
-        if not project_id:
-            return {"error": f"Task has no projectId: {task_id}"}
-
-        endpoint = TASK_COMPLETE.format(project_id=project_id, task_id=task_id)
-        client.call_api(endpoint, method="POST")
-        logger.info(f"Successfully completed task {task_id}")
-        return {"success": True, "message": f"Task {task_id} completed"}
-    except Exception as e:
-        logger.error(f"Failed to complete task: {e}")
-        return {"error": str(e)}
 
 
 @mcp.tool()
@@ -646,5 +618,51 @@ def unofficial_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str
         }
     except Exception as e:
         logger.error(f"Failed to make subtask: {e}")
+        return {"error": str(e)}
+
+
+# ==================== Experimental API Tool ====================
+
+
+@mcp.tool()
+def unofficial_api_call(
+    endpoint: str,
+    method: str = "GET",
+    data: str | None = None,
+    params: str | None = None
+) -> dict[str, Any] | list[dict]:
+    """
+    Make a raw API call to TickTick's unofficial API for experimentation.
+
+    Use this to test and explore endpoints directly. The endpoint, method,
+    payload, and query params are all provided by the caller.
+
+    Args:
+        endpoint: API path (e.g., "/api/v2/batch/task", "/api/v1/task/activity/{id}")
+        method: HTTP method - GET, POST, PUT, or DELETE
+        data: JSON string for the request body (POST/PUT). Must be valid JSON or null.
+        params: JSON string for query parameters. Must be valid JSON object or null.
+
+    Returns:
+        Raw API response or error dict
+    """
+    import json
+
+    logger.info(f"unofficial_api_call: {method} {endpoint}")
+
+    try:
+        client = _get_api_client()
+
+        parsed_data = json.loads(data) if data else None
+        parsed_params = json.loads(params) if params else None
+
+        result = client.call_api(endpoint, method=method, data=parsed_data, params=parsed_params)
+        logger.info(f"unofficial_api_call succeeded: {method} {endpoint}")
+        return result
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in data or params: {e}")
+        return {"error": f"Invalid JSON: {e}"}
+    except Exception as e:
+        logger.error(f"unofficial_api_call failed: {e}")
         return {"error": str(e)}
 
