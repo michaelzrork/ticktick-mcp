@@ -7,7 +7,14 @@ These tools use direct API calls to unofficial v2 endpoints:
 - Task activity logs
 - Full CRUD operations via unofficial API
 - Fresh data fetches (no caching!)
-- Proper subtask relationships (parentId/childIds)
+- Proper subtask relationships (parentId/childIds via batch/taskParent)
+- Checklist item management (items[] array - add, update, remove, convert)
+
+CHECKLIST ITEMS vs SUBTASKS:
+- Checklist items: Embedded in task's items[] array. Simple checkbox list.
+  Use unofficial_add_checklist_item, unofficial_update_checklist_item, etc.
+- Subtasks: Separate tasks with parentId/childIds. True task hierarchy.
+  Use unofficial_make_subtask, unofficial_remove_subtask.
 
 Requires TICKTICK_USERNAME and TICKTICK_PASSWORD environment variables.
 """
@@ -782,6 +789,388 @@ def unofficial_remove_subtask(child_task_id: str) -> dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Failed to remove subtask: {e}")
+        return {"error": str(e)}
+
+
+# ==================== Checklist Item Tools ====================
+
+
+@mcp.tool()
+def unofficial_add_checklist_item(
+    task_id: str,
+    title: str
+) -> dict[str, Any]:
+    """
+    Add a checklist item to an existing task via the unofficial API.
+
+    Checklist items are embedded in the task's items[] array. This is different
+    from subtasks, which are separate tasks with parentId/childIds relationships.
+
+    Args:
+        task_id: The task ID to add the checklist item to
+        title: The title of the new checklist item
+
+    Returns:
+        Updated task with the new checklist item
+
+    Example:
+        unofficial_add_checklist_item(
+            task_id="abc123",
+            title="New step"
+        )
+    """
+    logger.info(f"unofficial_add_checklist_item called for task: {task_id}")
+
+    try:
+        client = _get_api_client()
+
+        # Get the full task
+        task = client.call_api(f"/api/v2/task/{task_id}")
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        # Get existing items or start with empty list
+        existing_items = task.get("items") or []
+
+        # Add new item (API will assign an ID)
+        new_item = {"title": title, "status": 0}
+        task["items"] = existing_items + [new_item]
+
+        # Update via batch endpoint
+        payload = {"add": [], "update": [task], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        if isinstance(result, dict) and task_id in result.get("id2etag", {}):
+            task["etag"] = result["id2etag"][task_id]
+
+        logger.info(f"Successfully added checklist item to task {task_id}")
+        return {
+            "success": True,
+            "task": task,
+            "added_item": new_item
+        }
+    except Exception as e:
+        logger.error(f"Failed to add checklist item: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def unofficial_update_checklist_item(
+    task_id: str,
+    item_id: str,
+    title: str | None = None,
+    status: int | None = None
+) -> dict[str, Any]:
+    """
+    Update a checklist item within a task via the unofficial API.
+
+    Args:
+        task_id: The task ID containing the checklist item
+        item_id: The checklist item ID to update
+        title: New title for the item (optional)
+        status: New status (0=uncompleted, 2=completed) (optional)
+
+    Returns:
+        Updated task with modified checklist item
+
+    Example:
+        # Complete a checklist item
+        unofficial_update_checklist_item(
+            task_id="abc123",
+            item_id="item789",
+            status=2
+        )
+
+        # Rename a checklist item
+        unofficial_update_checklist_item(
+            task_id="abc123",
+            item_id="item789",
+            title="Updated step name"
+        )
+    """
+    logger.info(f"unofficial_update_checklist_item called for task: {task_id}, item: {item_id}")
+
+    try:
+        client = _get_api_client()
+
+        # Get the full task
+        task = client.call_api(f"/api/v2/task/{task_id}")
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        existing_items = task.get("items") or []
+        if not existing_items:
+            return {"error": "Task has no checklist items"}
+
+        # Find and update the item
+        item_found = False
+        for item in existing_items:
+            if item.get("id") == item_id:
+                item_found = True
+                if title is not None:
+                    item["title"] = title
+                if status is not None:
+                    item["status"] = status
+                break
+
+        if not item_found:
+            return {"error": f"Checklist item not found: {item_id}"}
+
+        task["items"] = existing_items
+
+        # Update via batch endpoint
+        payload = {"add": [], "update": [task], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        if isinstance(result, dict) and task_id in result.get("id2etag", {}):
+            task["etag"] = result["id2etag"][task_id]
+
+        logger.info(f"Successfully updated checklist item {item_id} in task {task_id}")
+        return {
+            "success": True,
+            "task": task
+        }
+    except Exception as e:
+        logger.error(f"Failed to update checklist item: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def unofficial_remove_checklist_item(
+    task_id: str,
+    item_id: str
+) -> dict[str, Any]:
+    """
+    Remove a checklist item from a task via the unofficial API.
+
+    Args:
+        task_id: The task ID containing the checklist item
+        item_id: The checklist item ID to remove
+
+    Returns:
+        Updated task without the removed checklist item
+
+    Example:
+        unofficial_remove_checklist_item(
+            task_id="abc123",
+            item_id="item789"
+        )
+    """
+    logger.info(f"unofficial_remove_checklist_item called for task: {task_id}, item: {item_id}")
+
+    try:
+        client = _get_api_client()
+
+        # Get the full task
+        task = client.call_api(f"/api/v2/task/{task_id}")
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        existing_items = task.get("items") or []
+        if not existing_items:
+            return {"error": "Task has no checklist items"}
+
+        # Filter out the item to remove
+        original_count = len(existing_items)
+        updated_items = [item for item in existing_items if item.get("id") != item_id]
+
+        if len(updated_items) == original_count:
+            return {"error": f"Checklist item not found: {item_id}"}
+
+        task["items"] = updated_items
+
+        # Update via batch endpoint
+        payload = {"add": [], "update": [task], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        if isinstance(result, dict) and task_id in result.get("id2etag", {}):
+            task["etag"] = result["id2etag"][task_id]
+
+        logger.info(f"Successfully removed checklist item {item_id} from task {task_id}")
+        return {
+            "success": True,
+            "task": task,
+            "removed_item_id": item_id
+        }
+    except Exception as e:
+        logger.error(f"Failed to remove checklist item: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def unofficial_convert_checklist_item_to_task(
+    task_id: str,
+    item_id: str
+) -> dict[str, Any]:
+    """
+    Convert a checklist item into a standalone task via the unofficial API.
+
+    The checklist item is removed from the parent task and a new task
+    is created with the same title in the same project.
+
+    Args:
+        task_id: The task ID containing the checklist item
+        item_id: The checklist item ID to convert
+
+    Returns:
+        Dict with the updated parent task and the new standalone task
+
+    Example:
+        result = unofficial_convert_checklist_item_to_task(
+            task_id="abc123",
+            item_id="item789"
+        )
+        # result["new_task"] is the new standalone task
+        # result["parent_task"] is the updated parent (without the item)
+    """
+    logger.info(f"unofficial_convert_checklist_item_to_task called for task: {task_id}, item: {item_id}")
+
+    try:
+        client = _get_api_client()
+
+        # Get the full task
+        task = client.call_api(f"/api/v2/task/{task_id}")
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        existing_items = task.get("items") or []
+        if not existing_items:
+            return {"error": "Task has no checklist items"}
+
+        # Find the item to convert
+        item_to_convert = None
+        updated_items = []
+        for item in existing_items:
+            if item.get("id") == item_id:
+                item_to_convert = item
+            else:
+                updated_items.append(item)
+
+        if not item_to_convert:
+            return {"error": f"Checklist item not found: {item_id}"}
+
+        project_id = task.get("projectId")
+
+        # Create new task from the item
+        new_task = {
+            "title": item_to_convert.get("title", "Untitled"),
+            "projectId": project_id,
+            "priority": 0,
+            "status": item_to_convert.get("status", 0),
+            "timeZone": task.get("timeZone", "America/New_York"),
+            "isAllDay": True,
+        }
+
+        # Update parent task to remove the item
+        task["items"] = updated_items
+
+        # Batch update: add new task, update parent
+        payload = {"add": [new_task], "update": [task], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        # Extract IDs from result
+        if isinstance(result, dict):
+            id2etag = result.get("id2etag", {})
+            for task_id_result, etag_info in id2etag.items():
+                if task_id_result == task_id:
+                    task["etag"] = etag_info if isinstance(etag_info, str) else etag_info.get("etag")
+                else:
+                    # This is the new task
+                    new_task["id"] = task_id_result
+                    new_task["etag"] = etag_info if isinstance(etag_info, str) else etag_info.get("etag")
+
+        logger.info(f"Successfully converted checklist item {item_id} to task")
+        return {
+            "success": True,
+            "new_task": new_task,
+            "parent_task": task,
+            "converted_from_item": item_to_convert
+        }
+    except Exception as e:
+        logger.error(f"Failed to convert checklist item to task: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def unofficial_convert_task_to_checklist_item(
+    child_task_id: str,
+    parent_task_id: str
+) -> dict[str, Any]:
+    """
+    Convert a task into a checklist item of another task via the unofficial API.
+
+    The child task is deleted and added as an item in the parent task's
+    items[] array. This is NOT the same as creating a subtask hierarchy.
+
+    For true subtasks (separate tasks with parent/child relationship),
+    use unofficial_make_subtask instead.
+
+    Args:
+        child_task_id: The task ID to convert into a checklist item
+        parent_task_id: The task ID that will contain the new checklist item
+
+    Returns:
+        Updated parent task with the new checklist item
+
+    Note:
+        The original child task is DELETED and becomes embedded in the parent.
+    """
+    logger.info(f"unofficial_convert_task_to_checklist_item called: child={child_task_id}, parent={parent_task_id}")
+
+    try:
+        client = _get_api_client()
+
+        # Get both tasks
+        child_task = client.call_api(f"/api/v2/task/{child_task_id}")
+        if not child_task:
+            return {"error": f"Child task not found: {child_task_id}"}
+
+        parent_task = client.call_api(f"/api/v2/task/{parent_task_id}")
+        if not parent_task:
+            return {"error": f"Parent task not found: {parent_task_id}"}
+
+        # Verify same project
+        if child_task.get("projectId") != parent_task.get("projectId"):
+            return {
+                "error": "Tasks must be in the same project to convert to checklist item",
+                "child_project": child_task.get("projectId"),
+                "parent_project": parent_task.get("projectId")
+            }
+
+        # Get existing checklist items from parent
+        existing_items = parent_task.get("items") or []
+
+        # Create new checklist item from child task
+        new_item = {
+            "title": child_task.get("title"),
+            "status": child_task.get("status", 0),
+        }
+        if child_task.get("startDate"):
+            new_item["startDate"] = child_task.get("startDate")
+
+        # Add to parent's items
+        parent_task["items"] = existing_items + [new_item]
+
+        # Batch: update parent, delete child
+        payload = {
+            "add": [],
+            "update": [parent_task],
+            "delete": [{"taskId": child_task_id, "projectId": child_task.get("projectId")}]
+        }
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        if isinstance(result, dict) and parent_task_id in result.get("id2etag", {}):
+            parent_task["etag"] = result["id2etag"][parent_task_id]
+
+        logger.info(f"Successfully converted task {child_task_id} to checklist item of {parent_task_id}")
+        return {
+            "success": True,
+            "message": f"Task '{child_task.get('title')}' is now a checklist item of '{parent_task.get('title')}'",
+            "parent_task": parent_task,
+            "note": "Original task was deleted and converted to a checklist item"
+        }
+    except Exception as e:
+        logger.error(f"Failed to convert task to checklist item: {e}")
         return {"error": str(e)}
 
 

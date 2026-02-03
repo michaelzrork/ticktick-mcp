@@ -7,6 +7,12 @@ Date format: Accepts "2026-01-31T21:00:00" and auto-appends timezone offset.
 Priority values: 0=None, 1=Low, 3=Medium, 5=High
 Reminder format: RFC 5545 TRIGGER (e.g., "TRIGGER:PT0S", "TRIGGER:-PT30M")
 Recurrence format: RFC 5545 RRULE (e.g., "RRULE:FREQ=DAILY;INTERVAL=1")
+
+CHECKLIST ITEMS vs SUBTASKS:
+- Checklist items: Embedded in task's items[] array. Simple list within a task.
+  Use ticktick_create_task_with_checklist, ticktick_add_checklist_item, etc.
+- Subtasks: Separate tasks with parentId/childIds relationship. True hierarchy.
+  Use unofficial_make_subtask from unofficial_tools.py for proper subtasks.
 """
 
 from __future__ import annotations
@@ -191,7 +197,7 @@ def _format_task(task: dict) -> dict[str, Any]:
         "status": task.get("status"),
         "completedTime": task.get("completedTime"),
         "sortOrder": task.get("sortOrder"),
-        "items": task.get("items"),  # Subtasks
+        "items": task.get("items"),  # Checklist items
         "tags": task.get("tags"),
         "kind": task.get("kind"),
     }
@@ -207,7 +213,7 @@ async def ticktick_get_task(project_id: str, task_id: str) -> dict[str, Any]:
         task_id: The task ID
 
     Returns:
-        Task details
+        Task details including items[] (checklist items) if present
     """
     client = get_ticktick_client()
     if not client:
@@ -300,10 +306,10 @@ async def ticktick_create_task(
 
 
 @mcp.tool()
-async def ticktick_create_task_with_subtasks(
+async def ticktick_create_task_with_checklist(
     title: str,
     project_id: str,
-    subtasks: list[str],
+    checklist_items: list[str],
     content: str | None = None,
     due_date: str | None = None,
     time_zone: str | None = None,
@@ -311,12 +317,16 @@ async def ticktick_create_task_with_subtasks(
     tags: list[str] | None = None
 ) -> dict[str, Any]:
     """
-    Create a new task with subtasks (checklist items).
+    Create a new task with checklist items (embedded items[] array).
+
+    Checklist items are simple checkbox items embedded within a single task.
+    For true hierarchical subtasks (separate tasks with parent/child relationship),
+    use unofficial_make_subtask instead.
 
     Args:
         title: Task title (required)
         project_id: Project ID (required)
-        subtasks: List of subtask titles (required)
+        checklist_items: List of checklist item titles (required)
         content: Task content/notes
         due_date: Due date (e.g., "2026-01-31T21:00:00"). Timezone offset auto-added.
         time_zone: Timezone for dates (e.g., "America/New_York")
@@ -324,7 +334,19 @@ async def ticktick_create_task_with_subtasks(
         tags: List of tags
 
     Returns:
-        Created task with subtasks
+        Created task with checklist items in the items[] array
+
+    Example:
+        ticktick_create_task_with_checklist(
+            title="Morning Routine",
+            project_id="abc123",
+            checklist_items=["Brush teeth", "Shower", "Make coffee"]
+        )
+        # Returns task with items: [
+        #   {"title": "Brush teeth", "status": 0},
+        #   {"title": "Shower", "status": 0},
+        #   {"title": "Make coffee", "status": 0}
+        # ]
     """
     client = get_ticktick_client()
     if not client:
@@ -332,10 +354,10 @@ async def ticktick_create_task_with_subtasks(
             "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
         }
 
-    # Build subtask items
+    # Build checklist items
     items = [
-        {"title": subtask_title, "status": 0}
-        for subtask_title in subtasks
+        {"title": item_title, "status": 0}
+        for item_title in checklist_items
     ]
 
     # Format date with timezone offset
@@ -357,7 +379,371 @@ async def ticktick_create_task_with_subtasks(
             "task": _format_task(task)
         }
     except TickTickAPIError as e:
-        logger.error(f"Failed to create task with subtasks: {e}")
+        logger.error(f"Failed to create task with checklist: {e}")
+        return {"error": str(e), "status_code": e.status_code}
+
+
+@mcp.tool()
+async def ticktick_add_checklist_item(
+    task_id: str,
+    project_id: str,
+    title: str
+) -> dict[str, Any]:
+    """
+    Add a checklist item to an existing task.
+
+    Checklist items are embedded in the task's items[] array, not separate tasks.
+
+    Args:
+        task_id: The task ID to add the checklist item to
+        project_id: The project ID containing the task
+        title: The title of the new checklist item
+
+    Returns:
+        Updated task with the new checklist item
+
+    Example:
+        ticktick_add_checklist_item(
+            task_id="abc123",
+            project_id="def456",
+            title="New step"
+        )
+    """
+    client = get_ticktick_client()
+    if not client:
+        return {
+            "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
+        }
+
+    try:
+        # Get existing task
+        task = await client.get_task(project_id, task_id)
+        
+        # Get existing items or start with empty list
+        existing_items = task.get("items") or []
+        
+        # Add new item
+        new_item = {"title": title, "status": 0}
+        updated_items = existing_items + [new_item]
+        
+        # Update task
+        updated_task = await client.update_task(
+            task_id=task_id,
+            project_id=project_id,
+            items=updated_items
+        )
+        
+        return {
+            "success": True,
+            "task": _format_task(updated_task),
+            "added_item": new_item
+        }
+    except TickTickAPIError as e:
+        logger.error(f"Failed to add checklist item: {e}")
+        return {"error": str(e), "status_code": e.status_code}
+
+
+@mcp.tool()
+async def ticktick_update_checklist_item(
+    task_id: str,
+    project_id: str,
+    item_id: str,
+    title: str | None = None,
+    status: int | None = None
+) -> dict[str, Any]:
+    """
+    Update a checklist item within a task.
+
+    Args:
+        task_id: The task ID containing the checklist item
+        project_id: The project ID containing the task
+        item_id: The checklist item ID to update
+        title: New title for the item (optional)
+        status: New status (0=uncompleted, 2=completed) (optional)
+
+    Returns:
+        Updated task with modified checklist item
+
+    Example:
+        # Complete a checklist item
+        ticktick_update_checklist_item(
+            task_id="abc123",
+            project_id="def456",
+            item_id="item789",
+            status=2
+        )
+        
+        # Rename a checklist item
+        ticktick_update_checklist_item(
+            task_id="abc123",
+            project_id="def456",
+            item_id="item789",
+            title="Updated step name"
+        )
+    """
+    client = get_ticktick_client()
+    if not client:
+        return {
+            "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
+        }
+
+    try:
+        # Get existing task
+        task = await client.get_task(project_id, task_id)
+        
+        existing_items = task.get("items") or []
+        if not existing_items:
+            return {"error": "Task has no checklist items"}
+        
+        # Find and update the item
+        item_found = False
+        updated_items = []
+        for item in existing_items:
+            if item.get("id") == item_id:
+                item_found = True
+                if title is not None:
+                    item["title"] = title
+                if status is not None:
+                    item["status"] = status
+            updated_items.append(item)
+        
+        if not item_found:
+            return {"error": f"Checklist item not found: {item_id}"}
+        
+        # Update task
+        updated_task = await client.update_task(
+            task_id=task_id,
+            project_id=project_id,
+            items=updated_items
+        )
+        
+        return {
+            "success": True,
+            "task": _format_task(updated_task)
+        }
+    except TickTickAPIError as e:
+        logger.error(f"Failed to update checklist item: {e}")
+        return {"error": str(e), "status_code": e.status_code}
+
+
+@mcp.tool()
+async def ticktick_remove_checklist_item(
+    task_id: str,
+    project_id: str,
+    item_id: str
+) -> dict[str, Any]:
+    """
+    Remove a checklist item from a task.
+
+    Args:
+        task_id: The task ID containing the checklist item
+        project_id: The project ID containing the task
+        item_id: The checklist item ID to remove
+
+    Returns:
+        Updated task without the removed checklist item
+
+    Example:
+        ticktick_remove_checklist_item(
+            task_id="abc123",
+            project_id="def456",
+            item_id="item789"
+        )
+    """
+    client = get_ticktick_client()
+    if not client:
+        return {
+            "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
+        }
+
+    try:
+        # Get existing task
+        task = await client.get_task(project_id, task_id)
+        
+        existing_items = task.get("items") or []
+        if not existing_items:
+            return {"error": "Task has no checklist items"}
+        
+        # Filter out the item to remove
+        original_count = len(existing_items)
+        updated_items = [item for item in existing_items if item.get("id") != item_id]
+        
+        if len(updated_items) == original_count:
+            return {"error": f"Checklist item not found: {item_id}"}
+        
+        # Update task
+        updated_task = await client.update_task(
+            task_id=task_id,
+            project_id=project_id,
+            items=updated_items
+        )
+        
+        return {
+            "success": True,
+            "task": _format_task(updated_task),
+            "removed_item_id": item_id
+        }
+    except TickTickAPIError as e:
+        logger.error(f"Failed to remove checklist item: {e}")
+        return {"error": str(e), "status_code": e.status_code}
+
+
+@mcp.tool()
+async def ticktick_convert_checklist_item_to_task(
+    task_id: str,
+    project_id: str,
+    item_id: str
+) -> dict[str, Any]:
+    """
+    Convert a checklist item into a standalone task.
+
+    The checklist item is removed from the parent task and a new task
+    is created with the same title.
+
+    Args:
+        task_id: The task ID containing the checklist item
+        project_id: The project ID containing the task
+        item_id: The checklist item ID to convert
+
+    Returns:
+        Dict with the updated parent task and the new standalone task
+
+    Example:
+        result = ticktick_convert_checklist_item_to_task(
+            task_id="abc123",
+            project_id="def456",
+            item_id="item789"
+        )
+        # result["new_task"] is the new standalone task
+        # result["parent_task"] is the updated parent (without the item)
+    """
+    client = get_ticktick_client()
+    if not client:
+        return {
+            "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
+        }
+
+    try:
+        # Get existing task
+        task = await client.get_task(project_id, task_id)
+        
+        existing_items = task.get("items") or []
+        if not existing_items:
+            return {"error": "Task has no checklist items"}
+        
+        # Find the item to convert
+        item_to_convert = None
+        updated_items = []
+        for item in existing_items:
+            if item.get("id") == item_id:
+                item_to_convert = item
+            else:
+                updated_items.append(item)
+        
+        if not item_to_convert:
+            return {"error": f"Checklist item not found: {item_id}"}
+        
+        # Create new task from the item
+        new_task = await client.create_task(
+            title=item_to_convert.get("title", "Untitled"),
+            project_id=project_id
+        )
+        
+        # Update parent task to remove the item
+        updated_parent = await client.update_task(
+            task_id=task_id,
+            project_id=project_id,
+            items=updated_items
+        )
+        
+        return {
+            "success": True,
+            "new_task": _format_task(new_task),
+            "parent_task": _format_task(updated_parent),
+            "converted_from_item": item_to_convert
+        }
+    except TickTickAPIError as e:
+        logger.error(f"Failed to convert checklist item to task: {e}")
+        return {"error": str(e), "status_code": e.status_code}
+
+
+@mcp.tool()
+async def ticktick_convert_task_to_checklist_item(
+    child_task_id: str,
+    child_project_id: str,
+    parent_task_id: str
+) -> dict[str, Any]:
+    """
+    Convert a task into a checklist item of another task.
+
+    The child task is deleted and added as an item in the parent task's
+    items[] array. This is NOT the same as creating a subtask hierarchy.
+
+    For true subtasks (separate tasks with parent/child relationship),
+    use unofficial_make_subtask instead.
+
+    Args:
+        child_task_id: The task ID to convert into a checklist item
+        child_project_id: The project ID containing the child task
+        parent_task_id: The task ID that will contain the new checklist item
+
+    Returns:
+        Updated parent task with the new checklist item
+
+    Note:
+        The original child task is DELETED and becomes embedded in the parent.
+    """
+    client = get_ticktick_client()
+    if not client:
+        return {
+            "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
+        }
+
+    try:
+        # Get both tasks
+        child_task = await client.get_task(child_project_id, child_task_id)
+        parent_task = await client.get_task(child_project_id, parent_task_id)
+
+        # Verify same project
+        if child_task.get("projectId") != parent_task.get("projectId"):
+            return {
+                "error": "Tasks must be in the same project to convert to checklist item",
+                "child_project": child_task.get("projectId"),
+                "parent_project": parent_task.get("projectId")
+            }
+
+        # Get existing checklist items from parent
+        existing_items = parent_task.get("items") or []
+
+        # Create new checklist item from child task
+        new_item = {
+            "title": child_task.get("title"),
+            "status": child_task.get("status", 0),
+        }
+        if child_task.get("startDate"):
+            new_item["startDate"] = child_task.get("startDate")
+
+        # Add to parent's items
+        updated_items = existing_items + [new_item]
+
+        # Update parent task with new checklist item
+        updated_parent = await client.update_task(
+            task_id=parent_task_id,
+            project_id=child_project_id,
+            items=updated_items
+        )
+
+        # Delete the original child task (now it's a checklist item)
+        await client.delete_task(child_project_id, child_task_id)
+
+        return {
+            "success": True,
+            "message": f"Task '{child_task.get('title')}' is now a checklist item of '{parent_task.get('title')}'",
+            "parent_task": _format_task(updated_parent),
+            "note": "Original task was deleted and converted to a checklist item"
+        }
+    except TickTickAPIError as e:
+        logger.error(f"Failed to convert task to checklist item: {e}")
         return {"error": str(e), "status_code": e.status_code}
 
 
@@ -380,6 +766,7 @@ async def ticktick_update_task(
     Update an existing task.
 
     Note: Both task_id and project_id are required for updates.
+    To update checklist items, use ticktick_update_checklist_item.
 
     Args:
         task_id: Task ID to update (required)
@@ -599,84 +986,6 @@ async def ticktick_filter_tasks(
         }
     except TickTickAPIError as e:
         logger.error(f"Failed to filter tasks: {e}")
-        return {"error": str(e), "status_code": e.status_code}
-
-
-@mcp.tool()
-async def ticktick_make_subtask(
-    child_task_id: str,
-    child_project_id: str,
-    parent_task_id: str
-) -> dict[str, Any]:
-    """
-    Make one task a subtask of another task.
-
-    Note: Both tasks must be in the same project. This converts an existing
-    task into a subtask (checklist item) of the parent task.
-
-    IMPORTANT: The official API may have limitations with this operation.
-    Subtasks created via the items[] array during task creation work reliably.
-    Converting existing tasks to subtasks may require the unofficial API.
-
-    Args:
-        child_task_id: The task ID to become a subtask
-        child_project_id: The project ID containing the child task
-        parent_task_id: The task ID that will become the parent
-
-    Returns:
-        Result of the operation
-    """
-    client = get_ticktick_client()
-    if not client:
-        return {
-            "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
-        }
-
-    try:
-        # Get both tasks
-        child_task = await client.get_task(child_project_id, child_task_id)
-        parent_task = await client.get_task(child_project_id, parent_task_id)
-
-        # Verify same project
-        if child_task.get("projectId") != parent_task.get("projectId"):
-            return {
-                "error": "Tasks must be in the same project to create a subtask relationship",
-                "child_project": child_task.get("projectId"),
-                "parent_project": parent_task.get("projectId")
-            }
-
-        # Get existing subtasks from parent
-        existing_items = parent_task.get("items") or []
-
-        # Create new subtask item from child task
-        new_item = {
-            "title": child_task.get("title"),
-            "status": child_task.get("status", 0),
-        }
-        if child_task.get("startDate"):
-            new_item["startDate"] = child_task.get("startDate")
-
-        # Add to parent's items
-        updated_items = existing_items + [new_item]
-
-        # Update parent task with new subtask
-        updated_parent = await client.update_task(
-            task_id=parent_task_id,
-            project_id=child_project_id,
-            items=updated_items
-        )
-
-        # Delete the original child task (now it's a subtask)
-        await client.delete_task(child_project_id, child_task_id)
-
-        return {
-            "success": True,
-            "message": f"Task '{child_task.get('title')}' is now a subtask of '{parent_task.get('title')}'",
-            "parent_task": _format_task(updated_parent),
-            "note": "Original task was deleted and converted to a subtask item"
-        }
-    except TickTickAPIError as e:
-        logger.error(f"Failed to make subtask: {e}")
         return {"error": str(e), "status_code": e.status_code}
 
 
