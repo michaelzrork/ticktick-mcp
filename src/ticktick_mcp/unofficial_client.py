@@ -201,7 +201,7 @@ class UnofficialAPIClient:
         self,
         endpoint: str,
         method: str = "GET",
-        data: dict | None = None,
+        data: dict | list | None = None,
         params: dict | None = None
     ) -> dict | list:
         """

@@ -29,6 +29,7 @@ BATCH_TASK = "/api/v2/batch/task"
 BATCH_TASK_PIN = "/api/v2/batch/taskPin"
 TASK_ACTIVITY = "/api/v1/task/activity/{task_id}"
 TASK_BY_ID = "/api/v2/task/{task_id}"
+BATCH_TASK_PROJECT = "/api/v2/batch/taskProject" 
 
 
 # ==================== Helpers ====================
@@ -670,8 +671,6 @@ def unofficial_delete_task(task_id: str) -> dict[str, Any]:
         return {"error": str(e)}
 
 
-
-
 @mcp.tool()
 def unofficial_move_task(task_id: str, to_project_id: str) -> dict[str, Any]:
     """
@@ -689,28 +688,32 @@ def unofficial_move_task(task_id: str, to_project_id: str) -> dict[str, Any]:
     try:
         client = _get_api_client()
 
-        # Get the task first (fresh from API)
-        task = _get_task_by_id(client, task_id)
+        # Get the task first to find its current project
+        task = client.call_api(f"/api/v2/task/{task_id}")
         if not task:
             return {"error": f"Task not found: {task_id}"}
 
         from_project_id = task.get("projectId")
 
-        # Update the projectId and save
-        task["projectId"] = to_project_id
-        payload = {"add": [], "update": [task], "delete": []}
-        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+        # Use the dedicated move endpoint (discovered from HAR analysis)
+        move_payload = [{
+            "taskId": task_id,
+            "fromProjectId": from_project_id,
+            "toProjectId": to_project_id
+        }]
+        result = client.call_api(BATCH_TASK_PROJECT, method="POST", data=move_payload)
 
-        # Extract etag from response
-        if isinstance(result, dict):
-            id_map = result.get("id2etag", {})
-            if task_id in id_map:
-                task["etag"] = id_map[task_id]
+        # Verify the move worked
+        if isinstance(result, dict) and result.get("id2error", {}).get(task_id):
+            return {"error": f"Move failed: {result['id2error'][task_id]}"}
 
-        logger.info(f"Successfully moved task {task_id} to project {to_project_id}")
+        # Fetch updated task to return
+        updated_task = client.call_api(f"/api/v2/task/{task_id}")
+
+        logger.info(f"Successfully moved task {task_id} from {from_project_id} to {to_project_id}")
         return {
             "success": True,
-            "task": task,
+            "task": updated_task,
             "moved_from": from_project_id,
             "moved_to": to_project_id
         }
