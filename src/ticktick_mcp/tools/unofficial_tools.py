@@ -625,7 +625,7 @@ def unofficial_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str
 
 
 @mcp.tool()
-def unofficial_api_call(
+def unofficial_experimental_api_call(
     endpoint: str,
     method: str = "GET",
     data: str | None = None,
@@ -648,7 +648,7 @@ def unofficial_api_call(
     """
     import json
 
-    logger.info(f"unofficial_api_call: {method} {endpoint}")
+    logger.info(f"unofficial_experimental_api_call: {method} {endpoint}")
 
     try:
         client = _get_api_client()
@@ -657,12 +657,12 @@ def unofficial_api_call(
         parsed_params = json.loads(params) if params else None
 
         result = client.call_api(endpoint, method=method, data=parsed_data, params=parsed_params)
-        logger.info(f"unofficial_api_call succeeded: {method} {endpoint}")
+        logger.info(f"unofficial_experimental_api_call succeeded: {method} {endpoint}")
         return result
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in data or params: {e}")
         return {"error": f"Invalid JSON: {e}"}
     except Exception as e:
-        logger.error(f"unofficial_api_call failed: {e}")
+        logger.error(f"unofficial_experimental_api_call failed: {e}")
         return {"error": str(e)}
 
