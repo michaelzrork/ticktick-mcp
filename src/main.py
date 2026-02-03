@@ -34,6 +34,14 @@ from ticktick_mcp.tools import task_tools  # noqa: F401
 from ticktick_mcp.tools import unofficial_tools  # noqa: F401
 logging.info("Tool registration complete.")
 
+# Eager init - login to unofficial API at startup, not on first tool call
+from ticktick_mcp.unofficial_client import UnofficialAPIClient
+try:
+    UnofficialAPIClient()
+    logging.info("Unofficial API client initialized successfully.")
+except Exception as e:
+    logging.error(f"Failed to initialize unofficial API client: {e}")
+
 
 # --- OAuth Routes (for cloud deployment) --- #
 
