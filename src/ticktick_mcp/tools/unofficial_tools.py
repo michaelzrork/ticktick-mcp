@@ -225,6 +225,56 @@ def unofficial_set_repeat_from(
         logger.error(f"Failed to set repeat_from: {e}")
         return {"error": str(e)}
 
+@mcp.tool()
+def unofficial_set_specific_dates(
+    task_id: str,
+    dates: list[str]
+) -> dict[str, Any]:
+    """
+    Set a task to repeat on specific dates.
+    
+    This replaces any existing recurrence pattern (RRULE) with specific dates (ERULE).
+    
+    Args:
+        task_id: The task ID
+        dates: List of dates in YYYY-MM-DD format (e.g., ["2026-02-05", "2026-02-10"])
+    
+    Returns:
+        Success message or error
+    """
+    logger.info(f"unofficial_set_specific_dates called: task={task_id}, dates={dates}")
+
+    if not dates:
+        return {"error": "At least one date is required"}
+
+    try:
+        client = _get_api_client()
+
+        # Fetch full task first
+        task = client.call_api(f"/api/v2/task/{task_id}")
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        # Convert dates to YYYYMMDD format and sort
+        formatted_dates = sorted([d.replace("-", "") for d in dates])
+        erule = f"ERULE:NAME=CUSTOM;BYDATE={','.join(formatted_dates)}"
+        
+        # First date becomes repeatFirstDate
+        first_date = dates[0] if dates[0] <= min(dates) else min(dates)
+        first_date_iso = f"{first_date}T05:00:00.000+0000"
+
+        task["repeatFlag"] = erule
+        task["repeatFirstDate"] = first_date_iso
+        task["repeatFrom"] = "0"
+
+        payload = {"add": [], "update": [task], "delete": []}
+        client.call_api(BATCH_TASK, method="POST", data=payload)
+        
+        logger.info(f"Successfully set specific dates for task {task_id}")
+        return {"success": True, "message": f"Task {task_id} set to repeat on {len(dates)} specific dates", "dates": dates}
+    except Exception as e:
+        logger.error(f"Failed to set specific dates: {e}")
+        return {"error": str(e)}
 
 # ==================== Data Fetch Tools (FRESH - NO CACHE) ====================
 
