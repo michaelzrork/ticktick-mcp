@@ -12,6 +12,8 @@ Requires TICKTICK_USERNAME and TICKTICK_PASSWORD environment variables.
 """
 
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from ticktick_mcp.mcp_instance import mcp
@@ -20,12 +22,42 @@ from ticktick_mcp.unofficial_client import UnofficialAPIClient, get_client
 logger = logging.getLogger(__name__)
 
 
+# ==================== API Endpoints ====================
+
+BATCH_CHECK = "/api/v2/batch/check/0"
+BATCH_TASK = "/api/v2/batch/task"
+BATCH_TASK_PIN = "/api/v2/batch/taskPin"
+TASK_ACTIVITY = "/api/v1/task/activity/{task_id}"
+TASK_COMPLETE = "/api/v2/project/{project_id}/task/{task_id}/complete"
+TASK_BY_ID = "/api/v2/task/{task_id}"
+
+
+# ==================== Helpers ====================
+
+
 def _get_api_client() -> UnofficialAPIClient:
     """Get the unofficial API client or raise an error."""
     client = get_client()
     if not client:
         raise RuntimeError("Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD.")
     return client
+
+
+def _fetch_all_data(client: UnofficialAPIClient) -> dict:
+    """Fetch all data from batch/check endpoint."""
+    result = client.call_api(BATCH_CHECK)
+    assert isinstance(result, dict)
+    return result
+
+
+def _get_task_by_id(client: UnofficialAPIClient, task_id: str) -> dict | None:
+    """Fetch a task by ID from the batch/check data."""
+    data = _fetch_all_data(client)
+    tasks = data.get("syncTaskBean", {}).get("update", [])
+    for task in tasks:
+        if task.get("id") == task_id:
+            return task
+    return None
 
 
 # ==================== Activity & Pin Tools ====================
@@ -55,7 +87,8 @@ def unofficial_get_task_activity(task_id: str) -> dict[str, Any] | list[dict]:
 
     try:
         client = _get_api_client()
-        activities = client.get_task_activity(task_id)
+        endpoint = TASK_ACTIVITY.format(task_id=task_id)
+        activities = client.call_api(endpoint)
         logger.info(f"Got {len(activities)} activity entries")
         return activities
     except Exception as e:
@@ -80,7 +113,7 @@ def unofficial_pin_task(task_id: str) -> dict[str, Any]:
 
     try:
         client = _get_api_client()
-        client.pin_task(task_id)
+        client.call_api(BATCH_TASK_PIN, method="POST", data={"add": [task_id]})
         logger.info(f"Successfully pinned task {task_id}")
         return {"success": True, "message": f"Task {task_id} pinned"}
     except Exception as e:
@@ -103,7 +136,7 @@ def unofficial_unpin_task(task_id: str) -> dict[str, Any]:
 
     try:
         client = _get_api_client()
-        client.unpin_task(task_id)
+        client.call_api(BATCH_TASK_PIN, method="POST", data={"delete": [task_id]})
         logger.info(f"Successfully unpinned task {task_id}")
         return {"success": True, "message": f"Task {task_id} unpinned"}
     except Exception as e:
@@ -146,7 +179,9 @@ def unofficial_set_repeat_from(
 
     try:
         client = _get_api_client()
-        client.set_repeat_from(task_id, project_id, api_value)
+        endpoint = TASK_BY_ID.format(task_id=task_id)
+        payload = {"id": task_id, "projectId": project_id, "repeatFrom": api_value}
+        client.call_api(endpoint, method="POST", data=payload)
         logger.info(f"Successfully set repeat_from for task {task_id}")
         return {"success": True, "message": f"Task {task_id} set to repeat from {repeat_from}"}
     except Exception as e:
@@ -171,10 +206,11 @@ def unofficial_get_all_data() -> dict[str, Any]:
 
     try:
         client = _get_api_client()
+        data = _fetch_all_data(client)
 
-        tasks = client.get_all_tasks()
-        projects = client.get_all_projects()
-        tags = client.get_all_tags()
+        tasks = data.get("syncTaskBean", {}).get("update", [])
+        projects = data.get("projectProfiles", [])
+        tags = data.get("tags", [])
 
         logger.info(f"Retrieved {len(tasks)} tasks, {len(projects)} projects, {len(tags)} tags (fresh)")
 
@@ -210,18 +246,21 @@ def unofficial_get_by_id(obj_id: str) -> dict[str, Any]:
 
     try:
         client = _get_api_client()
+        data = _fetch_all_data(client)
 
         # Try task first
-        task = client.get_task_by_id(obj_id)
-        if task:
-            logger.info(f"Found task with ID: {obj_id}")
-            return {"type": "task", "data": task}
+        tasks = data.get("syncTaskBean", {}).get("update", [])
+        for task in tasks:
+            if task.get("id") == obj_id:
+                logger.info(f"Found task with ID: {obj_id}")
+                return {"type": "task", "data": task}
 
         # Try project
-        project = client.get_project_by_id(obj_id)
-        if project:
-            logger.info(f"Found project with ID: {obj_id}")
-            return {"type": "project", "data": project}
+        projects = data.get("projectProfiles", [])
+        for project in projects:
+            if project.get("id") == obj_id:
+                logger.info(f"Found project with ID: {obj_id}")
+                return {"type": "project", "data": project}
 
         logger.info(f"No object found with ID: {obj_id}")
         return {"error": f"No object found with ID: {obj_id}"}
@@ -249,13 +288,14 @@ def unofficial_get_all(
 
     try:
         client = _get_api_client()
+        data = _fetch_all_data(client)
 
         if obj_type == "tasks":
-            result = client.get_all_tasks()
+            result = data.get("syncTaskBean", {}).get("update", [])
         elif obj_type == "projects":
-            result = client.get_all_projects()
+            result = data.get("projectProfiles", [])
         elif obj_type == "tags":
-            result = client.get_all_tags()
+            result = data.get("tags", [])
         else:
             return {"error": f"Unknown object type: {obj_type}"}
 
@@ -287,13 +327,15 @@ def unofficial_get_tasks_from_project(
 
     try:
         client = _get_api_client()
+        data = _fetch_all_data(client)
+        all_tasks = data.get("syncTaskBean", {}).get("update", [])
 
-        # Get uncompleted tasks
-        tasks = client.get_tasks_from_project(project_id, status=0)
+        # Filter to this project, uncompleted (status=0)
+        tasks = [t for t in all_tasks if t.get("projectId") == project_id and t.get("status") == 0]
 
-        # Optionally include completed
+        # Optionally include completed (status=2)
         if include_completed:
-            completed = client.get_tasks_from_project(project_id, status=2)
+            completed = [t for t in all_tasks if t.get("projectId") == project_id and t.get("status") == 2]
             tasks.extend(completed)
 
         logger.info(f"Retrieved {len(tasks)} tasks from project {project_id} (fresh)")
@@ -335,16 +377,38 @@ def unofficial_create_task(
 
     try:
         client = _get_api_client()
-        task = client.create_task(
-            title=title,
-            project_id=project_id,
-            content=content,
-            start_date=start_date,
-            due_date=due_date,
-            priority=priority,
-            tags=tags
-        )
-        logger.info(f"Successfully created task: {task.get('id')}")
+
+        task_id = uuid.uuid4().hex[:24]
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+
+        task = {
+            "id": task_id,
+            "projectId": project_id,
+            "title": title,
+            "priority": priority,
+            "status": 0,
+            "createdTime": now,
+            "modifiedTime": now,
+        }
+        if content:
+            task["content"] = content
+        if start_date:
+            task["startDate"] = start_date
+        if due_date:
+            task["dueDate"] = due_date
+        if tags:
+            task["tags"] = tags
+
+        payload = {"add": [task], "update": [], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        # Extract etag from response
+        if isinstance(result, dict):
+            id_map = result.get("id2etag", {})
+            if task_id in id_map:
+                task["etag"] = id_map[task_id]
+
+        logger.info(f"Successfully created task: {task_id}")
         return {"success": True, "task": task}
     except Exception as e:
         logger.error(f"Failed to create task: {e}")
@@ -382,7 +446,7 @@ def unofficial_update_task(
         client = _get_api_client()
 
         # Get the task first (fresh from API)
-        task = client.get_task_by_id(task_id)
+        task = _get_task_by_id(client, task_id)
         if not task:
             return {"error": f"Task not found: {task_id}"}
 
@@ -401,9 +465,17 @@ def unofficial_update_task(
             task["tags"] = tags
 
         # Save updates
-        result = client.update_task(task)
+        payload = {"add": [], "update": [task], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        # Extract etag from response
+        if isinstance(result, dict):
+            id_map = result.get("id2etag", {})
+            if task_id in id_map:
+                task["etag"] = id_map[task_id]
+
         logger.info(f"Successfully updated task {task_id}")
-        return {"success": True, "task": result}
+        return {"success": True, "task": task}
     except Exception as e:
         logger.error(f"Failed to update task: {e}")
         return {"error": str(e)}
@@ -426,7 +498,7 @@ def unofficial_delete_task(task_id: str) -> dict[str, Any]:
         client = _get_api_client()
 
         # Get the task first to find its project (fresh from API)
-        task = client.get_task_by_id(task_id)
+        task = _get_task_by_id(client, task_id)
         if not task:
             return {"error": f"Task not found: {task_id}"}
 
@@ -434,7 +506,8 @@ def unofficial_delete_task(task_id: str) -> dict[str, Any]:
         if not project_id:
             return {"error": f"Task has no projectId: {task_id}"}
 
-        client.delete_task(task_id, project_id)
+        payload = {"add": [], "update": [], "delete": [{"taskId": task_id, "projectId": project_id}]}
+        client.call_api(BATCH_TASK, method="POST", data=payload)
         logger.info(f"Successfully deleted task {task_id}")
         return {"success": True, "message": f"Task {task_id} deleted"}
     except Exception as e:
@@ -459,7 +532,7 @@ def unofficial_complete_task(task_id: str) -> dict[str, Any]:
         client = _get_api_client()
 
         # Get the task first to find its project (fresh from API)
-        task = client.get_task_by_id(task_id)
+        task = _get_task_by_id(client, task_id)
         if not task:
             return {"error": f"Task not found: {task_id}"}
 
@@ -467,7 +540,8 @@ def unofficial_complete_task(task_id: str) -> dict[str, Any]:
         if not project_id:
             return {"error": f"Task has no projectId: {task_id}"}
 
-        client.complete_task(task_id, project_id)
+        endpoint = TASK_COMPLETE.format(project_id=project_id, task_id=task_id)
+        client.call_api(endpoint, method="POST")
         logger.info(f"Successfully completed task {task_id}")
         return {"success": True, "message": f"Task {task_id} completed"}
     except Exception as e:
@@ -493,17 +567,27 @@ def unofficial_move_task(task_id: str, to_project_id: str) -> dict[str, Any]:
         client = _get_api_client()
 
         # Get the task first (fresh from API)
-        task = client.get_task_by_id(task_id)
+        task = _get_task_by_id(client, task_id)
         if not task:
             return {"error": f"Task not found: {task_id}"}
 
         from_project_id = task.get("projectId")
 
-        result = client.move_task(task_id, from_project_id, to_project_id)
+        # Update the projectId and save
+        task["projectId"] = to_project_id
+        payload = {"add": [], "update": [task], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        # Extract etag from response
+        if isinstance(result, dict):
+            id_map = result.get("id2etag", {})
+            if task_id in id_map:
+                task["etag"] = id_map[task_id]
+
         logger.info(f"Successfully moved task {task_id} to project {to_project_id}")
         return {
             "success": True,
-            "task": result,
+            "task": task,
             "moved_from": from_project_id,
             "moved_to": to_project_id
         }
@@ -530,43 +614,37 @@ def unofficial_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str
 
     try:
         client = _get_api_client()
-        result = client.make_subtask(child_task_id, parent_task_id)
+
+        # Get both tasks fresh from API
+        child = _get_task_by_id(client, child_task_id)
+        if not child:
+            return {"error": f"Child task not found: {child_task_id}"}
+
+        parent = _get_task_by_id(client, parent_task_id)
+        if not parent:
+            return {"error": f"Parent task not found: {parent_task_id}"}
+
+        if child.get("projectId") != parent.get("projectId"):
+            return {"error": "Tasks must be in the same project"}
+
+        # Set parent relationship and save
+        child["parentId"] = parent_task_id
+        payload = {"add": [], "update": [child], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        # Extract etag from response
+        if isinstance(result, dict):
+            id_map = result.get("id2etag", {})
+            if child_task_id in id_map:
+                child["etag"] = id_map[child_task_id]
+
         logger.info(f"Successfully made task {child_task_id} a subtask of {parent_task_id}")
         return {
             "success": True,
-            "message": f"Task is now a subtask",
-            "task": result
+            "message": "Task is now a subtask",
+            "task": child
         }
     except Exception as e:
         logger.error(f"Failed to make subtask: {e}")
         return {"error": str(e)}
 
-
-
-# ==================== TEST: call_api() refactor ====================
-
-@mcp.tool()
-def unofficial_test_call_api_get_activity(task_id: str) -> dict[str, Any] | list[dict]:
-    """
-    TEST: Get task activity using the new call_api method.
-
-    This duplicates unofficial_get_task_activity to validate the call_api refactor.
-    Delete this tool once refactor is confirmed working.
-
-    Args:
-        task_id: The task ID
-
-    Returns:
-        List of activity entries or error dict
-    """
-    logger.info(f"unofficial_test_call_api_get_activity called for task: {task_id}")
-
-    try:
-        client = _get_api_client()
-        endpoint = f"/api/v1/task/activity/{task_id}"
-        activities = client.call_api(endpoint, method="GET")
-        logger.info(f"Got {len(activities)} activity entries via call_api")
-        return activities
-    except Exception as e:
-        logger.error(f"Failed to get task activity via call_api: {e}")
-        return {"error": str(e)}
