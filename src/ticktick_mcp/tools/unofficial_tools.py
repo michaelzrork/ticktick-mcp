@@ -7,6 +7,7 @@ These tools use direct API calls to unofficial v2 endpoints:
 - Task activity logs
 - Full CRUD operations via unofficial API
 - Fresh data fetches (no caching!)
+- Proper subtask relationships (parentId/childIds)
 
 Requires TICKTICK_USERNAME and TICKTICK_PASSWORD environment variables.
 """
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 BATCH_CHECK = "/api/v2/batch/check/0"
 BATCH_TASK = "/api/v2/batch/task"
 BATCH_TASK_PROJECT = "/api/v2/batch/taskProject"
+BATCH_TASK_PARENT = "/api/v2/batch/taskParent"
 TASK_ACTIVITY = "/api/v1/task/activity/{task_id}"
 TASK_BY_ID = "/api/v2/task/{task_id}"
 
@@ -661,21 +663,36 @@ def unofficial_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str
     """
     Make one task a subtask of another via the unofficial API.
 
-    Both tasks must be in the same project.
+    Creates a proper parent-child relationship where:
+    - Parent task gets childIds[] array updated
+    - Child task gets parentId set
+
+    This creates TRUE subtasks (separate tasks with hierarchy), not checklist
+    items (embedded in items[] array). Both tasks must be in the same project.
 
     Args:
         child_task_id: The task ID to become a subtask
         parent_task_id: The task ID that will become the parent
 
     Returns:
-        Success message or error
+        Dict with success status and updated parent/child info from API response
+
+    Example:
+        # Create parent and child tasks first
+        parent = unofficial_create_task(title="Main Task", project_id="...")
+        child = unofficial_create_task(title="Step 1", project_id="...")
+
+        # Make child a subtask of parent
+        result = unofficial_make_subtask(child["task"]["id"], parent["task"]["id"])
+        # Parent now has childIds: [child_id]
+        # Child now has parentId: parent_id
     """
     logger.info(f"unofficial_make_subtask called: child={child_task_id}, parent={parent_task_id}")
 
     try:
         client = _get_api_client()
 
-        # Get both tasks fresh from API
+        # Get both tasks to verify they exist and are in same project
         child = _get_task_by_id(client, child_task_id)
         if not child:
             return {"error": f"Child task not found: {child_task_id}"}
@@ -684,28 +701,87 @@ def unofficial_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str
         if not parent:
             return {"error": f"Parent task not found: {parent_task_id}"}
 
-        if child.get("projectId") != parent.get("projectId"):
+        project_id = child.get("projectId")
+        if project_id != parent.get("projectId"):
             return {"error": "Tasks must be in the same project"}
 
-        # Set parent relationship and save
-        child["parentId"] = parent_task_id
-        payload = {"add": [], "update": [child], "delete": []}
-        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+        # Use the dedicated taskParent endpoint (discovered from ticktick-py)
+        # This properly updates BOTH parent.childIds AND child.parentId
+        subtask_payload = [{
+            "parentId": parent_task_id,
+            "projectId": project_id,
+            "taskId": child_task_id
+        }]
+        result = client.call_api(BATCH_TASK_PARENT, method="POST", data=subtask_payload)
 
-        # Extract etag from response
-        if isinstance(result, dict):
-            id_map = result.get("id2etag", {})
-            if child_task_id in id_map:
-                child["etag"] = id_map[child_task_id]
+        # Check for errors
+        if isinstance(result, dict) and result.get("id2error", {}).get(child_task_id):
+            return {"error": f"Make subtask failed: {result['id2error'][child_task_id]}"}
+
+        # Extract updated info from response
+        id2etag = result.get("id2etag", {}) if isinstance(result, dict) else {}
 
         logger.info(f"Successfully made task {child_task_id} a subtask of {parent_task_id}")
         return {
             "success": True,
-            "message": "Task is now a subtask",
-            "task": child
+            "message": f"Task is now a subtask",
+            "parent": id2etag.get(parent_task_id, {}),
+            "child": id2etag.get(child_task_id, {})
         }
     except Exception as e:
         logger.error(f"Failed to make subtask: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def unofficial_remove_subtask(child_task_id: str) -> dict[str, Any]:
+    """
+    Remove a subtask relationship, making the child a standalone task.
+
+    The child task remains in the same project but is no longer nested
+    under its parent. Both tasks continue to exist.
+
+    Args:
+        child_task_id: The subtask ID to un-nest
+
+    Returns:
+        Dict with success status and updated task info
+    """
+    logger.info(f"unofficial_remove_subtask called: child={child_task_id}")
+
+    try:
+        client = _get_api_client()
+
+        # Get the child task
+        child = _get_task_by_id(client, child_task_id)
+        if not child:
+            return {"error": f"Child task not found: {child_task_id}"}
+
+        if not child.get("parentId"):
+            return {"error": "Task is not a subtask (no parentId)"}
+
+        project_id = child.get("projectId")
+
+        # Use taskParent endpoint with null parentId to remove relationship
+        subtask_payload = [{
+            "parentId": None,
+            "projectId": project_id,
+            "taskId": child_task_id
+        }]
+        result = client.call_api(BATCH_TASK_PARENT, method="POST", data=subtask_payload)
+
+        # Check for errors
+        if isinstance(result, dict) and result.get("id2error", {}).get(child_task_id):
+            return {"error": f"Remove subtask failed: {result['id2error'][child_task_id]}"}
+
+        logger.info(f"Successfully removed subtask relationship for {child_task_id}")
+        return {
+            "success": True,
+            "message": "Task is no longer a subtask",
+            "task_id": child_task_id
+        }
+    except Exception as e:
+        logger.error(f"Failed to remove subtask: {e}")
         return {"error": str(e)}
 
 
