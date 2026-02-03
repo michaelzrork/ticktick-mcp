@@ -95,6 +95,7 @@ def unofficial_get_task_activity(task_id: str) -> dict[str, Any] | list[dict]:
         logger.error(f"Failed to get task activity: {e}")
         return {"error": str(e)}
 
+from datetime import datetime, timezone
 
 @mcp.tool()
 def unofficial_pin_task(task_id: str) -> dict[str, Any]:
@@ -113,9 +114,25 @@ def unofficial_pin_task(task_id: str) -> dict[str, Any]:
 
     try:
         client = _get_api_client()
-        client.call_api(BATCH_TASK_PIN, method="POST", data={"add": [task_id]})
+        
+        # Fetch the task first
+        task = client.call_api(f"/api/v2/task/{task_id}")
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+        
+        # Set pinnedTime to current timestamp
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+        task["pinnedTime"] = now
+        
+        # Update via batch endpoint
+        payload = {"add": [], "update": [task], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+        
+        if isinstance(result, dict) and result.get("id2error", {}).get(task_id):
+            return {"error": f"Pin failed: {result['id2error'][task_id]}"}
+        
         logger.info(f"Successfully pinned task {task_id}")
-        return {"success": True, "message": f"Task {task_id} pinned"}
+        return {"success": True, "message": f"Task {task_id} pinned", "pinnedTime": now}
     except Exception as e:
         logger.error(f"Failed to pin task: {e}")
         return {"error": str(e)}
@@ -136,7 +153,22 @@ def unofficial_unpin_task(task_id: str) -> dict[str, Any]:
 
     try:
         client = _get_api_client()
-        client.call_api(BATCH_TASK_PIN, method="POST", data={"delete": [task_id]})
+        
+        # Fetch the task first
+        task = client.call_api(f"/api/v2/task/{task_id}")
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+        
+        # Set pinnedTime to "-1" to unpin
+        task["pinnedTime"] = "-1"
+        
+        # Update via batch endpoint
+        payload = {"add": [], "update": [task], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+        
+        if isinstance(result, dict) and result.get("id2error", {}).get(task_id):
+            return {"error": f"Unpin failed: {result['id2error'][task_id]}"}
+        
         logger.info(f"Successfully unpinned task {task_id}")
         return {"success": True, "message": f"Task {task_id} unpinned"}
     except Exception as e:

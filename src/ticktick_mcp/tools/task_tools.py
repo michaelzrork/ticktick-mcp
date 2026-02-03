@@ -603,50 +603,6 @@ async def ticktick_filter_tasks(
 
 
 @mcp.tool()
-async def ticktick_move_task(task_id: str, from_project_id: str, to_project_id: str) -> dict[str, Any]:
-    """
-    Move a task from one project to another.
-
-    Note: This is done by updating the task's projectId field.
-
-    Args:
-        task_id: The task ID to move
-        from_project_id: Current project ID (required to fetch the task)
-        to_project_id: Destination project ID
-
-    Returns:
-        Updated task details
-    """
-    client = get_ticktick_client()
-    if not client:
-        return {
-            "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
-        }
-
-    try:
-        # Get the current task
-        task = await client.get_task(from_project_id, task_id)
-
-        # Update with new project ID
-        # The official API requires sending the full task object for updates
-        updated_task = await client.update_task(
-            task_id=task_id,
-            project_id=to_project_id,  # New project
-            title=task.get("title"),
-        )
-
-        return {
-            "success": True,
-            "task": _format_task(updated_task),
-            "moved_from": from_project_id,
-            "moved_to": to_project_id
-        }
-    except TickTickAPIError as e:
-        logger.error(f"Failed to move task {task_id}: {e}")
-        return {"error": str(e), "status_code": e.status_code}
-
-
-@mcp.tool()
 async def ticktick_make_subtask(
     child_task_id: str,
     child_project_id: str,
