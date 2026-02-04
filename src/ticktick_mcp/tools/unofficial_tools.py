@@ -198,42 +198,6 @@ def unofficial_unpin_task(task_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def unofficial_get_all_data() -> dict[str, Any]:
-    """
-    Get all data from TickTick via the unofficial API.
-
-    ALWAYS returns fresh data - no caching. Each call fetches from the API.
-
-    Returns:
-        Dict with tasks, projects, tags counts and data
-    """
-    logger.info("unofficial_get_all_data called")
-
-    try:
-        client = _get_api_client()
-        data = _fetch_all_data(client)
-
-        tasks = data.get("syncTaskBean", {}).get("update", [])
-        projects = data.get("projectProfiles", [])
-        tags = data.get("tags", [])
-
-        logger.info(f"Retrieved {len(tasks)} tasks, {len(projects)} projects, {len(tags)} tags (fresh)")
-
-        return {
-            "success": True,
-            "tasks": tasks,
-            "projects": projects,
-            "tags": tags,
-            "task_count": len(tasks),
-            "project_count": len(projects),
-            "tag_count": len(tags)
-        }
-    except Exception as e:
-        logger.error(f"Failed to get data: {e}")
-        return {"error": str(e)}
-
-
-@mcp.tool()
 def unofficial_get_task(task_id: str) -> dict[str, Any]:
     """
     Get a TickTick task by ID via the unofficial API.
@@ -267,15 +231,19 @@ def unofficial_get_task(task_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 def unofficial_get_all(
-    obj_type: Literal["tasks", "projects", "tags"]
+    obj_type: Literal["projects", "tags"]
 ) -> dict[str, Any] | list[dict]:
     """
-    Get all objects of a specific type via the unofficial API.
+    Get all projects or tags via the unofficial API.
 
     ALWAYS returns fresh data - no caching.
 
+    For tasks, use unofficial_filter_tasks() instead — it supports filtering
+    by status, project, tag, date range, priority, and title search to avoid
+    returning overwhelming amounts of data.
+
     Args:
-        obj_type: Type of objects to retrieve - "tasks", "projects", or "tags"
+        obj_type: Type of objects to retrieve - "projects" or "tags"
 
     Returns:
         List of objects or error dict
@@ -286,14 +254,12 @@ def unofficial_get_all(
         client = _get_api_client()
         data = _fetch_all_data(client)
 
-        if obj_type == "tasks":
-            result = data.get("syncTaskBean", {}).get("update", [])
-        elif obj_type == "projects":
+        if obj_type == "projects":
             result = data.get("projectProfiles", [])
         elif obj_type == "tags":
             result = data.get("tags", [])
         else:
-            return {"error": f"Unknown object type: {obj_type}"}
+            return {"error": f"Unknown object type: {obj_type}. Use unofficial_filter_tasks() for tasks."}
 
         logger.info(f"Retrieved {len(result)} {obj_type} (fresh)")
         return result
@@ -338,6 +304,188 @@ def unofficial_get_tasks_from_project(
         return tasks
     except Exception as e:
         logger.error(f"Failed to get tasks from project: {e}")
+        return {"error": str(e)}
+
+
+def _parse_date(date_str: str | None) -> datetime | None:
+    """Parse a date string to datetime for comparison."""
+    if not date_str:
+        return None
+    try:
+        clean = date_str.replace(".000", "")
+        if len(clean) > 5 and clean[-5] in "+-" and ":" not in clean[-5:]:
+            clean = clean[:-2] + ":" + clean[-2:]
+        return datetime.fromisoformat(clean)
+    except (ValueError, TypeError):
+        try:
+            return datetime.fromisoformat(date_str[:10])
+        except (ValueError, TypeError):
+            return None
+
+
+def _matches_filter(task: dict, filters: dict) -> bool:
+    """Check if a task matches the given filter criteria."""
+    status = filters.get("status", "uncompleted")
+    task_status = task.get("status", 0)
+    if status == "uncompleted" and task_status != 0:
+        return False
+    if status == "completed" and task_status != 2:
+        return False
+
+    title_contains = filters.get("title_contains")
+    if title_contains:
+        task_title = task.get("title") or ""
+        if title_contains.lower() not in task_title.lower():
+            return False
+
+    project_id = filters.get("project_id")
+    if project_id and task.get("projectId") != project_id:
+        return False
+
+    tag_label = filters.get("tag_label")
+    if tag_label:
+        task_tags = task.get("tags") or []
+        if tag_label not in task_tags:
+            return False
+
+    priority = filters.get("priority")
+    if priority is not None and task.get("priority") != priority:
+        return False
+
+    due_start = filters.get("due_start_date")
+    due_end = filters.get("due_end_date")
+    if due_start or due_end:
+        task_due = _parse_date(task.get("dueDate"))
+        if not task_due:
+            return False
+        if due_start:
+            filter_start = _parse_date(due_start)
+            if filter_start and task_due.date() < filter_start.date():
+                return False
+        if due_end:
+            filter_end = _parse_date(due_end)
+            if filter_end and task_due.date() > filter_end.date():
+                return False
+
+    comp_start = filters.get("completion_start_date")
+    comp_end = filters.get("completion_end_date")
+    if comp_start or comp_end:
+        task_completed = _parse_date(task.get("completedTime"))
+        if not task_completed:
+            return False
+        if comp_start:
+            filter_start = _parse_date(comp_start)
+            if filter_start and task_completed.date() < filter_start.date():
+                return False
+        if comp_end:
+            filter_end = _parse_date(comp_end)
+            if filter_end and task_completed.date() > filter_end.date():
+                return False
+
+    return True
+
+
+@mcp.tool()
+def unofficial_filter_tasks(
+    status: str = "uncompleted",
+    project_id: str | None = None,
+    tag_label: str | None = None,
+    title_contains: str | None = None,
+    priority: int | None = None,
+    due_start_date: str | None = None,
+    due_end_date: str | None = None,
+    completion_start_date: str | None = None,
+    completion_end_date: str | None = None,
+    sort_by_priority: bool = False
+) -> dict[str, Any]:
+    """
+    PRIMARY TOOL FOR FINDING AND LISTING TASKS via the unofficial API.
+    Use this instead of fetching all data.
+
+    Searches across all projects and returns only tasks matching your filters.
+    Always returns fresh data (no caching). By default, only returns uncompleted tasks.
+
+    IMPORTANT: Use this tool whenever you need to find, list, or browse tasks.
+    Do NOT use get-all tools to retrieve tasks — use this with appropriate filters.
+
+    Args:
+        status: "uncompleted" (default), "completed", or "all"
+        project_id: Filter by specific project ID
+        tag_label: Filter by tag name (exact match, e.g., "errands", "work")
+        title_contains: Search for tasks whose title contains this text (case-insensitive)
+        priority: Filter by priority level (0=None, 1=Low, 3=Medium, 5=High)
+        due_start_date: Only tasks due on or after this date (ISO format, e.g., "2026-02-01")
+        due_end_date: Only tasks due on or before this date (ISO format)
+        completion_start_date: Only tasks completed on or after this date (for completed/all)
+        completion_end_date: Only tasks completed on or before this date (for completed/all)
+        sort_by_priority: Sort results by priority (highest first)
+
+    Returns:
+        Dict with filtered tasks, total_count, and filters_applied
+
+    Examples:
+        Get all incomplete tasks (default):
+            unofficial_filter_tasks()
+
+        Search by title:
+            unofficial_filter_tasks(title_contains="groceries")
+
+        Get tasks from a specific project:
+            unofficial_filter_tasks(project_id="abc123")
+
+        Get tasks with a specific tag:
+            unofficial_filter_tasks(tag_label="errands")
+
+        Get high-priority tasks:
+            unofficial_filter_tasks(priority=5, sort_by_priority=True)
+
+        Get tasks due this week:
+            unofficial_filter_tasks(due_start_date="2026-02-03", due_end_date="2026-02-09")
+
+        Get tasks due today or later:
+            unofficial_filter_tasks(due_start_date="2026-02-03")
+
+        Get completed tasks from a project:
+            unofficial_filter_tasks(status="completed", project_id="abc123")
+
+        Get completed tasks from last week:
+            unofficial_filter_tasks(status="completed", completion_start_date="2026-01-27", completion_end_date="2026-02-02")
+
+        Get all tasks (completed + uncompleted) with a tag:
+            unofficial_filter_tasks(status="all", tag_label="work")
+    """
+    logger.info("unofficial_filter_tasks called")
+
+    try:
+        client = _get_api_client()
+        data = _fetch_all_data(client)
+        all_tasks = data.get("syncTaskBean", {}).get("update", [])
+
+        filters = {
+            "status": status,
+            "project_id": project_id,
+            "tag_label": tag_label,
+            "title_contains": title_contains,
+            "priority": priority,
+            "due_start_date": due_start_date,
+            "due_end_date": due_end_date,
+            "completion_start_date": completion_start_date,
+            "completion_end_date": completion_end_date,
+        }
+
+        filtered_tasks = [t for t in all_tasks if _matches_filter(t, filters)]
+
+        if sort_by_priority:
+            filtered_tasks.sort(key=lambda t: t.get("priority", 0), reverse=True)
+
+        logger.info(f"Filtered to {len(filtered_tasks)} tasks from {len(all_tasks)} total (fresh)")
+        return {
+            "tasks": filtered_tasks,
+            "total_count": len(filtered_tasks),
+            "filters_applied": {k: v for k, v in filters.items() if v is not None}
+        }
+    except Exception as e:
+        logger.error(f"Failed to filter tasks: {e}")
         return {"error": str(e)}
 
 
