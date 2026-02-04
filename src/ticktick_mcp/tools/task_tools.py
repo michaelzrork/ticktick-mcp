@@ -124,6 +124,14 @@ def _matches_filter(task: dict, filters: dict) -> bool:
         return False
     if status == "completed" and task_status != 2:
         return False
+    # status == "all" allows both
+
+    # Title search filter (case-insensitive substring match)
+    title_contains = filters.get("title_contains")
+    if title_contains:
+        task_title = task.get("title") or ""
+        if title_contains.lower() not in task_title.lower():
+            return False
 
     # Project filter
     project_id = filters.get("project_id")
@@ -142,39 +150,37 @@ def _matches_filter(task: dict, filters: dict) -> bool:
     if priority is not None and task.get("priority") != priority:
         return False
 
-    # Due date range filter (for uncompleted tasks)
-    if status == "uncompleted":
-        due_start = filters.get("due_start_date")
-        due_end = filters.get("due_end_date")
-        if due_start or due_end:
-            task_due = _parse_date(task.get("dueDate"))
-            if not task_due:
-                return False  # No due date but filter requires one
-            if due_start:
-                filter_start = _parse_date(due_start)
-                if filter_start and task_due.date() < filter_start.date():
-                    return False
-            if due_end:
-                filter_end = _parse_date(due_end)
-                if filter_end and task_due.date() > filter_end.date():
-                    return False
-
-    # Completion date range filter (for completed tasks)
-    if status == "completed":
-        comp_start = filters.get("completion_start_date")
-        comp_end = filters.get("completion_end_date")
-        if comp_start or comp_end:
-            task_completed = _parse_date(task.get("completedTime"))
-            if not task_completed:
+    # Due date range filter
+    due_start = filters.get("due_start_date")
+    due_end = filters.get("due_end_date")
+    if due_start or due_end:
+        task_due = _parse_date(task.get("dueDate"))
+        if not task_due:
+            return False  # No due date but filter requires one
+        if due_start:
+            filter_start = _parse_date(due_start)
+            if filter_start and task_due.date() < filter_start.date():
                 return False
-            if comp_start:
-                filter_start = _parse_date(comp_start)
-                if filter_start and task_completed.date() < filter_start.date():
-                    return False
-            if comp_end:
-                filter_end = _parse_date(comp_end)
-                if filter_end and task_completed.date() > filter_end.date():
-                    return False
+        if due_end:
+            filter_end = _parse_date(due_end)
+            if filter_end and task_due.date() > filter_end.date():
+                return False
+
+    # Completion date range filter (only meaningful for completed tasks)
+    comp_start = filters.get("completion_start_date")
+    comp_end = filters.get("completion_end_date")
+    if comp_start or comp_end:
+        task_completed = _parse_date(task.get("completedTime"))
+        if not task_completed:
+            return False
+        if comp_start:
+            filter_start = _parse_date(comp_start)
+            if filter_start and task_completed.date() < filter_start.date():
+                return False
+        if comp_end:
+            filter_end = _parse_date(comp_end)
+            if filter_end and task_completed.date() > filter_end.date():
+                return False
 
     return True
 
@@ -880,37 +886,11 @@ async def ticktick_delete_task(project_id: str, task_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def ticktick_get_all_tasks() -> dict[str, Any]:
-    """
-    Get all tasks from all projects (including Inbox if user_id is configured).
-
-    Note: This makes multiple API calls, one per project.
-
-    Returns:
-        All tasks grouped by project
-    """
-    client = get_ticktick_client()
-    if not client:
-        return {
-            "error": "Not authenticated. Please complete OAuth flow at /oauth/start"
-        }
-
-    try:
-        tasks = await client.get_all_tasks()
-        return {
-            "tasks": [_format_task(t) for t in tasks],
-            "total_count": len(tasks)
-        }
-    except TickTickAPIError as e:
-        logger.error(f"Failed to get all tasks: {e}")
-        return {"error": str(e), "status_code": e.status_code}
-
-
-@mcp.tool()
 async def ticktick_filter_tasks(
     status: str = "uncompleted",
     project_id: str | None = None,
     tag_label: str | None = None,
+    title_contains: str | None = None,
     priority: int | None = None,
     due_start_date: str | None = None,
     due_end_date: str | None = None,
@@ -919,36 +899,60 @@ async def ticktick_filter_tasks(
     sort_by_priority: bool = False
 ) -> dict[str, Any]:
     """
-    Filter tasks based on various criteria.
+    PRIMARY TOOL FOR FINDING AND LISTING TASKS. Use this instead of fetching all data.
 
-    Fetches tasks from all projects and applies client-side filtering.
+    Searches across all projects and returns only tasks matching your filters.
+    Always use at least one filter to avoid overwhelming results. By default,
+    only returns uncompleted tasks.
+
+    IMPORTANT: Use this tool whenever you need to find, list, or browse tasks.
+    Do NOT use get-all tools to retrieve tasks — use this with appropriate filters.
 
     Args:
-        status: Task status - "uncompleted" (default) or "completed"
+        status: "uncompleted" (default), "completed", or "all"
         project_id: Filter by specific project ID
-        tag_label: Filter by tag name (exact match)
+        tag_label: Filter by tag name (exact match, e.g., "errands", "work")
+        title_contains: Search for tasks whose title contains this text (case-insensitive)
         priority: Filter by priority level (0=None, 1=Low, 3=Medium, 5=High)
-        due_start_date: Start of due date range (ISO format, e.g., "2024-07-26")
-        due_end_date: End of due date range (ISO format)
-        completion_start_date: Start of completion date range (for completed tasks)
-        completion_end_date: End of completion date range (for completed tasks)
+        due_start_date: Only tasks due on or after this date (ISO format, e.g., "2026-02-01")
+        due_end_date: Only tasks due on or before this date (ISO format)
+        completion_start_date: Only tasks completed on or after this date (for completed/all)
+        completion_end_date: Only tasks completed on or before this date (for completed/all)
         sort_by_priority: Sort results by priority (highest first)
 
     Returns:
-        Filtered list of tasks
+        Filtered list of tasks with total_count and filters_applied
 
     Examples:
-        Get all uncompleted high-priority tasks:
-            status="uncompleted", priority=5
+        Get all incomplete tasks (default):
+            ticktick_filter_tasks()
+
+        Search by title:
+            ticktick_filter_tasks(title_contains="groceries")
+
+        Get tasks from a specific project:
+            ticktick_filter_tasks(project_id="abc123")
+
+        Get tasks with a specific tag:
+            ticktick_filter_tasks(tag_label="errands")
+
+        Get high-priority tasks:
+            ticktick_filter_tasks(priority=5, sort_by_priority=True)
 
         Get tasks due this week:
-            status="uncompleted", due_start_date="2024-07-22", due_end_date="2024-07-28"
+            ticktick_filter_tasks(due_start_date="2026-02-03", due_end_date="2026-02-09")
+
+        Get tasks due today or later:
+            ticktick_filter_tasks(due_start_date="2026-02-03")
+
+        Get completed tasks from a project:
+            ticktick_filter_tasks(status="completed", project_id="abc123")
 
         Get completed tasks from last week:
-            status="completed", completion_start_date="2024-07-15", completion_end_date="2024-07-21"
+            ticktick_filter_tasks(status="completed", completion_start_date="2026-01-27", completion_end_date="2026-02-02")
 
-        Get all tasks with "work" tag:
-            tag_label="work"
+        Get all tasks (completed + uncompleted) with a tag:
+            ticktick_filter_tasks(status="all", tag_label="work")
     """
     client = get_ticktick_client()
     if not client:
@@ -961,6 +965,7 @@ async def ticktick_filter_tasks(
         "status": status,
         "project_id": project_id,
         "tag_label": tag_label,
+        "title_contains": title_contains,
         "priority": priority,
         "due_start_date": due_start_date,
         "due_end_date": due_end_date,
