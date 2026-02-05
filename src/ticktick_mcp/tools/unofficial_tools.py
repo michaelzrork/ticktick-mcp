@@ -512,15 +512,35 @@ def unofficial_create_task(
 
     Supports all fields including recurrence patterns that the official API cannot set.
 
+    CRITICAL — DATE/TIME RULES:
+
+    All-day tasks (DEFAULT — is_all_day defaults to True):
+        start_date="2026-02-06"    (date-only, NO time component)
+        due_date="2026-02-06"      (date-only, NO time component)
+        time_zone="America/New_York"
+        Do NOT append T00:00:00 or any time to all-day dates.
+
+    Timed tasks (only when user specifies a clock time):
+        start_date="2026-02-06T14:00:00"    (include time)
+        due_date="2026-02-06T14:00:00"      (include time)
+        is_all_day=False                     (must explicitly set)
+        time_zone="America/New_York"
+
+    ALWAYS:
+        - Set BOTH start_date AND due_date to the same value
+        - Include time_zone with every date (defaults to America/New_York)
+        - Omitting one date can create unintended date ranges
+
     Args:
         title: Task title (required)
         project_id: Project ID (required). Use "inbox{userId}" for Inbox.
         content: Task content/notes
-        start_date: Start date (e.g., "2026-01-31T21:00:00"). Timezone offset auto-added.
-        due_date: Due date (e.g., "2026-01-31T21:00:00"). Required for recurring tasks.
+        start_date: Start date. Use "2026-02-06" for all-day, "2026-02-06T14:00:00" for timed.
+        due_date: Due date. Use "2026-02-06" for all-day, "2026-02-06T14:00:00" for timed.
+            Required for recurring tasks.
         priority: Priority level (0=None, 1=Low, 3=Medium, 5=High)
         tags: List of tags
-        is_all_day: Whether it's an all-day task (default: True)
+        is_all_day: Whether it's an all-day task (default: True). Set to False for timed tasks.
         repeat_flag: Recurrence rule (RRULE format). Examples:
             - "RRULE:FREQ=DAILY;INTERVAL=1" = Every day
             - "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR" = Mon/Wed/Fri
@@ -531,20 +551,37 @@ def unofficial_create_task(
         specific_dates: List of specific dates in YYYY-MM-DD format.
             If provided, creates an ERULE instead of RRULE (overrides repeat_flag).
             Example: ["2026-02-05", "2026-02-10", "2026-02-15"]
-        time_zone: Timezone (e.g., "America/New_York")
+        time_zone: Timezone (e.g., "America/New_York"). Always included when dates are set.
 
     Returns:
         Created task details
 
     Examples:
-        # Simple task
-        unofficial_create_task(title="Buy groceries", project_id="abc123")
+        # All-day task (default)
+        unofficial_create_task(
+            title="Buy groceries",
+            project_id="abc123",
+            start_date="2026-02-06",
+            due_date="2026-02-06",
+            time_zone="America/New_York"
+        )
+
+        # Timed task at 2pm
+        unofficial_create_task(
+            title="Meeting",
+            project_id="abc123",
+            start_date="2026-02-06T14:00:00",
+            due_date="2026-02-06T14:00:00",
+            is_all_day=False,
+            time_zone="America/New_York"
+        )
 
         # Recurring task that repeats from completion date
         unofficial_create_task(
             title="Water plants",
             project_id="abc123",
-            due_date="2026-02-01T09:00:00",
+            start_date="2026-02-01",
+            due_date="2026-02-01",
             repeat_flag="RRULE:FREQ=DAILY;INTERVAL=3",
             repeat_from="completion_date"
         )
@@ -617,9 +654,11 @@ def unofficial_update_task(
     priority: int | None = None,
     status: int | None = None,
     tags: list[str] | None = None,
+    is_all_day: bool | None = None,
     repeat_flag: str | None = None,
     repeat_from: str | None = None,
     specific_dates: list[str] | None = None,
+    time_zone: str = "America/New_York",
 ) -> dict[str, Any]:
     """
     Update an existing task via the unofficial API.
@@ -627,17 +666,53 @@ def unofficial_update_task(
     Works for both completed and incomplete tasks. Can update fields the official
     API cannot, including recurrence patterns and task status.
 
+    CRITICAL — DATE/TIME RULES:
+
+    Moving an all-day task to a new date:
+        start_date="2026-02-08"    (date-only, NO time component)
+        due_date="2026-02-08"      (date-only, NO time component)
+        time_zone="America/New_York"
+        is_all_day is optional here but safe to include as True
+
+    Moving a timed task to a new time:
+        start_date="2026-02-08T14:00:00"    (include time)
+        due_date="2026-02-08T14:00:00"      (include time)
+        time_zone="America/New_York"
+        is_all_day is optional here but safe to include as False
+
+    Converting timed → all-day:
+        is_all_day=True                     (REQUIRED — explicit flag)
+        start_date="2026-02-08"             (REQUIRED — date-only)
+        due_date="2026-02-08"               (REQUIRED — date-only)
+        time_zone="America/New_York"
+        WARNING: Sending is_all_day without dates WIPES the dates entirely
+
+    Converting all-day → timed:
+        is_all_day=False                    (REQUIRED — explicit flag)
+        start_date="2026-02-08T14:00:00"    (REQUIRED — with time)
+        due_date="2026-02-08T14:00:00"      (REQUIRED — with time)
+        time_zone="America/New_York"
+
+    ALWAYS:
+        - Set BOTH start_date AND due_date even if only one is changing
+        - Include time_zone with every date update (defaults to America/New_York)
+        - Omitting start_date leaves old value, creating unintended date ranges
+        - Do NOT append T00:00:00 or any time to all-day dates
+        - Do NOT strip time from timed task dates
+
     Args:
         task_id: Task ID to update (required)
         title: New task title
         content: New task content/notes
-        start_date: New start date
-        due_date: New due date
+        start_date: New start date. Use "2026-02-08" for all-day, "2026-02-08T14:00:00" for timed.
+        due_date: New due date. Use "2026-02-08" for all-day, "2026-02-08T14:00:00" for timed.
         priority: New priority (0=None, 1=Low, 3=Medium, 5=High)
         status: Task status:
             - 0 = Incomplete (use this to UN-COMPLETE a completed task)
             - 2 = Complete
         tags: New tags list (replaces existing tags)
+        is_all_day: Whether this is an all-day task. Required when converting between
+            timed and all-day tasks.
         repeat_flag: New recurrence rule (RRULE format). Examples:
             - "RRULE:FREQ=DAILY;INTERVAL=1" = Every day
             - "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR" = Mon/Wed/Fri
@@ -648,11 +723,38 @@ def unofficial_update_task(
         specific_dates: List of specific dates in YYYY-MM-DD format.
             If provided, replaces any existing recurrence with an ERULE.
             Example: ["2026-02-05", "2026-02-10", "2026-02-15"]
+        time_zone: Timezone (e.g., "America/New_York"). Always included when dates are updated.
 
     Returns:
         Updated task details
 
     Examples:
+        # Move an all-day task to a new date
+        unofficial_update_task(
+            task_id="abc123",
+            start_date="2026-02-08",
+            due_date="2026-02-08",
+            time_zone="America/New_York"
+        )
+
+        # Convert timed task to all-day
+        unofficial_update_task(
+            task_id="abc123",
+            is_all_day=True,
+            start_date="2026-02-08",
+            due_date="2026-02-08",
+            time_zone="America/New_York"
+        )
+
+        # Convert all-day task to timed
+        unofficial_update_task(
+            task_id="abc123",
+            is_all_day=False,
+            start_date="2026-02-08T14:00:00",
+            due_date="2026-02-08T14:00:00",
+            time_zone="America/New_York"
+        )
+
         # Un-complete a task
         unofficial_update_task(task_id="abc123", status=0)
 
@@ -661,13 +763,6 @@ def unofficial_update_task(
 
         # Set specific dates recurrence
         unofficial_update_task(task_id="abc123", specific_dates=["2026-03-01", "2026-03-15"])
-
-        # Add a weekly recurrence to an existing task
-        unofficial_update_task(
-            task_id="abc123",
-            due_date="2026-02-10T09:00:00",
-            repeat_flag="RRULE:FREQ=WEEKLY;INTERVAL=1"
-        )
     """
     logger.info(f"unofficial_update_task called for task: {task_id}")
 
@@ -692,6 +787,12 @@ def unofficial_update_task(
             task["priority"] = priority
         if tags is not None:
             task["tags"] = tags
+        if is_all_day is not None:
+            task["isAllDay"] = is_all_day
+
+        # Always update timeZone when any date field is being updated
+        if start_date is not None or due_date is not None:
+            task["timeZone"] = time_zone
 
         # Handle status change (including un-completing)
         if status is not None:
