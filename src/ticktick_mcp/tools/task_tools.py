@@ -253,14 +253,18 @@ async def ticktick_create_task(
     """
     Create a new task.
 
+    IMPORTANT: To set a due date/time for a task, you must set both start_date and
+    due_date to the same value. If you only set due_date without start_date, TickTick
+    will create a ranged/duration task, which is usually not the intended behavior.
+
     Args:
         title: Task title (required)
         project_id: Project ID (required). Use "inbox{userId}" for Inbox.
         content: Task content/notes
         desc: Description for checklist
         is_all_day: Whether it's an all-day task
-        start_date: Start date (e.g., "2026-01-31T21:00:00"). Timezone offset auto-added.
-        due_date: Due date (e.g., "2026-01-31T21:00:00"). Timezone offset auto-added.
+        start_date: Start date (e.g., "2026-01-31T21:00:00"). Set same as due_date for point-in-time.
+        due_date: Due date (e.g., "2026-01-31T21:00:00"). Set same as start_date for point-in-time.
         time_zone: Timezone for dates (e.g., "America/New_York"). Used to calculate offset.
         reminders: List of reminders. Examples:
             - "TRIGGER:PT0S" = At time of event
@@ -317,6 +321,7 @@ async def ticktick_create_task_with_checklist(
     project_id: str,
     checklist_items: list[str],
     content: str | None = None,
+    start_date: str | None = None,
     due_date: str | None = None,
     time_zone: str | None = None,
     priority: int | None = None,
@@ -329,12 +334,17 @@ async def ticktick_create_task_with_checklist(
     For true hierarchical subtasks (separate tasks with parent/child relationship),
     use unofficial_make_subtask instead.
 
+    IMPORTANT: To set a due date/time for a task, you must set both start_date and
+    due_date to the same value. If you only set due_date without start_date, TickTick
+    will create a ranged/duration task, which is usually not the intended behavior.
+
     Args:
         title: Task title (required)
         project_id: Project ID (required)
         checklist_items: List of checklist item titles (required)
         content: Task content/notes
-        due_date: Due date (e.g., "2026-01-31T21:00:00"). Timezone offset auto-added.
+        start_date: Start date (e.g., "2026-01-31T21:00:00"). Set same as due_date for point-in-time.
+        due_date: Due date (e.g., "2026-01-31T21:00:00"). Set same as start_date for point-in-time.
         time_zone: Timezone for dates (e.g., "America/New_York")
         priority: Priority level (0=None, 1=Low, 3=Medium, 5=High)
         tags: List of tags
@@ -366,7 +376,8 @@ async def ticktick_create_task_with_checklist(
         for item_title in checklist_items
     ]
 
-    # Format date with timezone offset
+    # Format dates with timezone offset
+    formatted_start = _format_date_for_ticktick(start_date, time_zone)
     formatted_due = _format_date_for_ticktick(due_date, time_zone)
 
     try:
@@ -374,6 +385,7 @@ async def ticktick_create_task_with_checklist(
             title=title,
             project_id=project_id,
             content=content,
+            start_date=formatted_start,
             due_date=formatted_due,
             time_zone=time_zone,
             priority=priority,
@@ -774,14 +786,19 @@ async def ticktick_update_task(
     Note: Both task_id and project_id are required for updates.
     To update checklist items, use ticktick_update_checklist_item.
 
+    IMPORTANT: When setting a due date, you must set both start_date and due_date
+    to the same value. If you only set due_date without start_date, TickTick will
+    create a ranged/duration task spanning from the existing start_date to the new
+    due_date, which is usually not the intended behavior.
+
     Args:
         task_id: Task ID to update (required)
         project_id: Project ID containing the task (required)
         title: New task title
         content: New task content
         is_all_day: Whether it's an all-day task
-        start_date: New start date
-        due_date: New due date
+        start_date: New start date (set same as due_date for a single point-in-time task)
+        due_date: New due date (set same as start_date for a single point-in-time task)
         time_zone: New timezone
         reminders: New reminders list
         repeat_flag: New recurrence rule
