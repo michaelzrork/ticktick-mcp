@@ -497,10 +497,12 @@ def unofficial_create_task(
     title: str,
     project_id: str,
     content: str | None = None,
+    desc: str | None = None,
     start_date: str | None = None,
     due_date: str | None = None,
     priority: int = 0,
     tags: list[str] | None = None,
+    reminders: list[str] | None = None,
     is_all_day: bool = True,
     repeat_flag: str | None = None,
     repeat_from: str | None = None,
@@ -535,11 +537,20 @@ def unofficial_create_task(
         title: Task title (required)
         project_id: Project ID (required). Use "inbox{userId}" for Inbox.
         content: Task content/notes
+        desc: User-visible description shown as subtitle in TickTick list view preview. Highest
+            display priority — always shows when set, overriding both checklist items and content
+            in the preview. Works on all task types. When opening the full task, all fields are visible.
         start_date: Start date. Use "2026-02-06" for all-day, "2026-02-06T14:00:00" for timed.
         due_date: Due date. Use "2026-02-06" for all-day, "2026-02-06T14:00:00" for timed.
             Required for recurring tasks.
         priority: Priority level (0=None, 1=Low, 3=Medium, 5=High)
         tags: List of tags
+        reminders: List of reminder triggers in RFC 5545 format. Examples:
+            - ["TRIGGER:PT0S"] = At time of event
+            - ["TRIGGER:-PT30M"] = 30 minutes before
+            - ["TRIGGER:-PT1H"] = 1 hour before
+            - ["TRIGGER:-P1D"] = 1 day before
+            Multiple: ["TRIGGER:PT0S", "TRIGGER:-PT30M"]
         is_all_day: Whether it's an all-day task (default: True). Set to False for timed tasks.
         repeat_flag: Recurrence rule (RRULE format). Examples:
             - "RRULE:FREQ=DAILY;INTERVAL=1" = Every day
@@ -615,6 +626,12 @@ def unofficial_create_task(
             task["dueDate"] = due_date
         if tags:
             task["tags"] = tags
+        if desc is not None:
+            task["desc"] = desc
+        if reminders is not None:
+            task["reminder"] = reminders[0]
+            if len(reminders) > 1:
+                task["reminders"] = [{"trigger": r} for r in reminders]
 
         # Handle specific dates (ERULE) - takes precedence over repeat_flag
         if specific_dates:
@@ -649,11 +666,13 @@ def unofficial_update_task(
     task_id: str,
     title: str | None = None,
     content: str | None = None,
+    desc: str | None = None,
     start_date: str | None = None,
     due_date: str | None = None,
     priority: int | None = None,
     status: int | None = None,
     tags: list[str] | None = None,
+    reminders: list[str] | None = None,
     is_all_day: bool | None = None,
     repeat_flag: str | None = None,
     repeat_from: str | None = None,
@@ -704,6 +723,9 @@ def unofficial_update_task(
         task_id: Task ID to update (required)
         title: New task title
         content: New task content/notes
+        desc: User-visible description shown as subtitle in TickTick list view preview. Highest
+            display priority — always shows when set, overriding both checklist items and content
+            in the preview. Works on all task types. When opening the full task, all fields are visible.
         start_date: New start date. Use "2026-02-08" for all-day, "2026-02-08T14:00:00" for timed.
         due_date: New due date. Use "2026-02-08" for all-day, "2026-02-08T14:00:00" for timed.
         priority: New priority (0=None, 1=Low, 3=Medium, 5=High)
@@ -711,6 +733,12 @@ def unofficial_update_task(
             - 0 = Incomplete (use this to UN-COMPLETE a completed task)
             - 2 = Complete
         tags: New tags list (replaces existing tags)
+        reminders: List of reminder triggers in RFC 5545 format. Examples:
+            - ["TRIGGER:PT0S"] = At time of event
+            - ["TRIGGER:-PT30M"] = 30 minutes before
+            - ["TRIGGER:-PT1H"] = 1 hour before
+            - ["TRIGGER:-P1D"] = 1 day before
+            Multiple: ["TRIGGER:PT0S", "TRIGGER:-PT30M"]
         is_all_day: Whether this is an all-day task. Required when converting between
             timed and all-day tasks.
         repeat_flag: New recurrence rule (RRULE format). Examples:
@@ -789,6 +817,14 @@ def unofficial_update_task(
             task["tags"] = tags
         if is_all_day is not None:
             task["isAllDay"] = is_all_day
+        if desc is not None:
+            task["desc"] = desc
+        if reminders is not None:
+            task["reminder"] = reminders[0]
+            if len(reminders) > 1:
+                task["reminders"] = [{"trigger": r} for r in reminders]
+            else:
+                task["reminders"] = [{"trigger": reminders[0]}]
 
         # Always update timeZone when any date field is being updated
         if start_date is not None or due_date is not None:
