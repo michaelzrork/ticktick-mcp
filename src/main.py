@@ -15,10 +15,7 @@ from urllib.parse import urlencode
 
 import httpx
 import uvicorn
-from starlette.applications import Starlette
-from starlette.routing import Route, Mount
 from starlette.responses import Response, RedirectResponse, JSONResponse
-from mcp.server.sse import SseServerTransport
 
 # Import config (initializes environment variables)
 from ticktick_mcp import config
@@ -45,6 +42,24 @@ except Exception as e:
 
 # --- OAuth Routes (for cloud deployment) --- #
 
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    return Response("OK", status_code=200)
+
+
+@mcp.custom_route("/status", methods=["GET"])
+async def status_check(request):
+    """Return server status including auth state."""
+    client = config.get_ticktick_client()
+    return JSONResponse({
+        "status": "running",
+        "authenticated": client is not None,
+        "user_id_configured": config.USER_ID is not None,
+        "inbox_available": client.inbox_id if client else None
+    })
+
+
+@mcp.custom_route("/oauth/start", methods=["GET"])
 async def start_oauth(request):
     """Initiate OAuth flow - redirects user to TickTick authorization page."""
     auth_url = "https://ticktick.com/oauth/authorize"
@@ -59,6 +74,7 @@ async def start_oauth(request):
     return RedirectResponse(url=url)
 
 
+@mcp.custom_route("/oauth/callback", methods=["GET"])
 async def oauth_callback(request):
     """Handle OAuth callback - exchanges code for token."""
     code = request.query_params.get("code")
@@ -115,41 +131,13 @@ def main():
         # HTTP/SSE mode for cloud deployment
         port = int(os.environ.get("PORT", 8000))
 
-        sse = SseServerTransport("/messages/")
-
-        async def handle_sse(request):
-            async with sse.connect_sse(
-                request.scope, request.receive, request._send
-            ) as streams:
-                await mcp._mcp_server.run(
-                    streams[0], streams[1],
-                    mcp._mcp_server.create_initialization_options()
-                )
-            return Response()
-
-        async def health_check(request):
-            return Response("OK", status_code=200)
-
-        async def status_check(request):
-            """Return server status including auth state."""
-            client = config.get_ticktick_client()
-            return JSONResponse({
-                "status": "running",
-                "authenticated": client is not None,
-                "user_id_configured": config.USER_ID is not None,
-                "inbox_available": client.inbox_id if client else None
-            })
-
-        app = Starlette(
-            routes=[
-                Route("/sse", endpoint=handle_sse, methods=["GET"]),
-                Mount("/messages", app=sse.handle_post_message),
-                Route("/health", endpoint=health_check, methods=["GET"]),
-                Route("/status", endpoint=status_check, methods=["GET"]),
-                Route("/oauth/start", endpoint=start_oauth, methods=["GET"]),
-                Route("/oauth/callback", endpoint=oauth_callback, methods=["GET"]),
-            ]
-        )
+        # The SDK wires up /sse and /messages/; the routes registered with
+        # @mcp.custom_route above are mounted alongside them.
+        #
+        # host="0.0.0.0" matters: sse_app() auto-enables DNS-rebinding protection
+        # when the host looks like localhost, which would reject requests carrying
+        # a public Host header once deployed.
+        app = mcp.sse_app(host="0.0.0.0")
 
         print(f"Starting TickTick MCP server on port {port}")
         print(f"Health check: /health")
