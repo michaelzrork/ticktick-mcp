@@ -304,3 +304,84 @@ def test_settings_failure_is_reported_in_status(transport):
     # Still connected - this is non-fatal by design - but no longer silent.
     assert client.status()["connected"] is True
     assert client.status()["settings_error"] is not None
+
+
+# ==================== Rejected credentials are terminal ====================
+
+REJECTION_BODY = (
+    '{"errorId":"wx45ygqs@tw10","errorCode":"username_password_not_match",'
+    '"errorMessage":"user@example.com","data":null}'
+)
+
+
+class RejectingTransport(httpx.BaseTransport):
+    """TickTick's real response to a wrong password: HTTP 500 with an errorCode."""
+
+    def __init__(self):
+        self.logins = 0
+
+    def handle_request(self, request):
+        if request.url.path.endswith("/user/signon"):
+            self.logins += 1
+            return httpx.Response(
+                500, text=REJECTION_BODY, request=request
+            )
+        return httpx.Response(404, request=request)
+
+
+@pytest.fixture
+def rejecting(monkeypatch):
+    t = RejectingTransport()
+    real_init = httpx.Client.__init__
+
+    def patched(self, *a, **kw):
+        kw["transport"] = t
+        real_init(self, *a, **kw)
+
+    monkeypatch.setattr(httpx.Client, "__init__", patched)
+    return t
+
+
+def test_wrong_password_is_not_retried(rejecting):
+    """Retrying a wrong password cannot succeed and invites a lockout."""
+    client = UnofficialAPIClient()
+
+    for _ in range(5):
+        assert client.ensure_connected() is False
+
+    assert rejecting.logins == 1, "must stop after the first rejection"
+    assert client.status()["credentials_rejected"] is True
+
+
+def test_rejection_ignores_the_backoff_window(rejecting):
+    """Even once a backoff would have expired, it must not try again."""
+    client = UnofficialAPIClient()
+    client.ensure_connected()
+
+    client._next_retry_at = 0.0
+    client.ensure_connected()
+
+    assert rejecting.logins == 1
+
+
+def test_rejection_message_is_actionable(rejecting):
+    client = UnofficialAPIClient()
+    client.ensure_connected()
+
+    reason = client.unavailable_reason()
+    assert "rejected the username and password" in reason
+    assert "TICKTICK_PASSWORD" in reason
+    # It should not read as a transient problem.
+    assert "Retrying in" not in reason
+
+
+def test_rate_limit_is_still_retried(transport):
+    """A 429 is transient and must stay retryable - only rejection is terminal."""
+    t = transport(login_status=429)
+    client = UnofficialAPIClient()
+    client.ensure_connected()
+
+    assert client.status()["credentials_rejected"] is False
+    client._next_retry_at = 0.0
+    t.login_status = 200
+    assert client.ensure_connected() is True

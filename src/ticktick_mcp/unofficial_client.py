@@ -88,6 +88,15 @@ def _write_state(state: dict) -> bool:
         return False
 
 
+def _login_error_code(body: str) -> str:
+    """Pull TickTick's errorCode out of a login error body, for a clean message."""
+    try:
+        parsed = json.loads(body)
+        return parsed.get("errorCode") or "unknown error"
+    except Exception:
+        return body[:120]
+
+
 def _new_device_id() -> str:
     """
     Generate a device id in the shape TickTick uses (24 lowercase hex chars).
@@ -122,6 +131,26 @@ class LoginRateLimited(RuntimeError):
     def __init__(self, message: str, retry_after: Optional[float] = None):
         super().__init__(message)
         self.retry_after = retry_after
+
+
+class LoginRejected(RuntimeError):
+    """
+    TickTick rejected the credentials themselves.
+
+    Terminal, unlike a rate limit: retrying the same username and password
+    cannot succeed, and hammering the login endpoint with bad credentials is a
+    good way to get rate-limited or locked out. Credentials are read at import,
+    so this clears on restart.
+    """
+
+
+# Error codes in TickTick's login response that mean "these credentials are
+# wrong", as opposed to "try again later".
+TERMINAL_LOGIN_ERROR_CODES = (
+    "username_password_not_match",
+    "user_not_exist",
+    "account_not_exist",
+)
 
 
 class UnofficialAPIClient:
@@ -187,6 +216,7 @@ class UnofficialAPIClient:
             self._failed_attempts = 0
             self._next_retry_at = 0.0
             self._logged_in_this_process = False
+            self._credentials_rejected = False
 
             self._device_id, self._device_id_persisted = self._resolve_device_id()
 
@@ -275,6 +305,11 @@ class UnofficialAPIClient:
                 )
                 return False
 
+            # Retrying credentials TickTick has already rejected cannot succeed,
+            # and repeated failed logins invite a rate limit or a lockout.
+            if self._credentials_rejected:
+                return False
+
             if time.monotonic() < self._next_retry_at:
                 return False
 
@@ -282,6 +317,15 @@ class UnofficialAPIClient:
                 self._initialize_client(allow_login=allow_login)
             except _LoginDeferred:
                 # No cached session and we were told not to log in. Not an error.
+                return False
+            except LoginRejected as e:
+                self._client = None
+                self._credentials_rejected = True
+                self._last_error = str(e)
+                logger.error(
+                    f"Unofficial API credentials rejected by TickTick: {e}. "
+                    "Not retrying - update TICKTICK_PASSWORD and restart."
+                )
                 return False
             except Exception as e:
                 self._client = None
@@ -329,6 +373,7 @@ class UnofficialAPIClient:
                 retry_in = max(0.0, self._next_retry_at - time.monotonic())
             return {
                 "credentials_configured": self.credentials_configured(),
+                "credentials_rejected": self._credentials_rejected,
                 "connected": connected,
                 "session_source": (
                     "cached" if connected and not self._logged_in_this_process
@@ -358,6 +403,15 @@ class UnofficialAPIClient:
             return (
                 "Unofficial API not configured: TICKTICK_USERNAME and "
                 "TICKTICK_PASSWORD are not set."
+            )
+        if state["credentials_rejected"]:
+            return (
+                "Unofficial API unavailable: TickTick rejected the username and "
+                "password. Check TICKTICK_PASSWORD (note that accounts created "
+                "via Google/Apple sign-in need a password set in TickTick before "
+                "password login works), then restart the server. Not retrying "
+                "until then, because repeated failed logins get the login "
+                "endpoint rate-limited."
             )
         if not state["last_error"]:
             return "Unofficial API is not connected yet; it authenticates on first use."
@@ -459,8 +513,14 @@ class UnofficialAPIClient:
             )
 
         if response.status_code != 200:
+            body = response.text[:500]
+            if any(code in body for code in TERMINAL_LOGIN_ERROR_CODES):
+                raise LoginRejected(
+                    f"TickTick rejected the username/password "
+                    f"(HTTP {response.status_code}: {_login_error_code(body)})"
+                )
             raise RuntimeError(
-                f"Login failed: {response.status_code} - {response.text[:200]}"
+                f"Login failed: {response.status_code} - {body[:200]}"
             )
 
         data = response.json()
