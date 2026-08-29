@@ -342,8 +342,8 @@ def rejecting(monkeypatch):
     return t
 
 
-def test_wrong_password_is_not_retried(rejecting):
-    """Retrying a wrong password cannot succeed and invites a lockout."""
+def test_rejection_is_not_hammered(rejecting):
+    """Retrying a rejected login cannot help and invites a lockout."""
     client = UnofficialAPIClient()
 
     for _ in range(5):
@@ -353,26 +353,69 @@ def test_wrong_password_is_not_retried(rejecting):
     assert client.status()["credentials_rejected"] is True
 
 
-def test_rejection_ignores_the_backoff_window(rejecting):
-    """Even once a backoff would have expired, it must not try again."""
+def test_rejection_uses_a_long_cooldown_not_a_permanent_stop(rejecting):
+    """
+    The same error code covers a wrong password and an anti-abuse block. A block
+    lifts on its own, so the client must eventually try again without a redeploy.
+    """
     client = UnofficialAPIClient()
     client.ensure_connected()
 
+    cooldown = client.status()["retry_in_seconds"]
+    assert cooldown > UnofficialAPIClient.RETRY_MAX_SECONDS, (
+        f"cooldown {cooldown}s should be much longer than a normal backoff"
+    )
+
     client._next_retry_at = 0.0
     client.ensure_connected()
+    assert rejecting.logins == 2, "must retry once the cooldown expires"
 
-    assert rejecting.logins == 1
 
-
-def test_rejection_message_is_actionable(rejecting):
+def test_rejection_message_does_not_assert_the_password_is_wrong(rejecting):
     client = UnofficialAPIClient()
     client.ensure_connected()
 
     reason = client.unavailable_reason()
-    assert "rejected the username and password" in reason
-    assert "TICKTICK_PASSWORD" in reason
-    # It should not read as a transient problem.
-    assert "Retrying in" not in reason
+    assert "username_password_not_match" in reason
+    assert "anti-abuse" in reason
+    assert "not proof" in reason
+
+
+def test_login_failure_captures_headers_and_body(rejecting):
+    """Headers are the only place a captcha or throttling hint would appear."""
+    client = UnofficialAPIClient()
+    client.ensure_connected()
+
+    diag = client.status()["last_login_diagnostics"]
+    assert diag["status"] == 500
+    assert diag["error_code"] == "username_password_not_match"
+    assert "errorId" in diag["body"]
+    assert isinstance(diag["headers"], dict)
+    assert diag["device_id"] == client.device_id
+
+
+def test_diagnostics_never_leak_a_session_cookie(rejecting):
+    client = UnofficialAPIClient()
+    client.ensure_connected()
+    headers = client.status()["last_login_diagnostics"]["headers"]
+    assert not any(k.lower() == "set-cookie" for k in headers)
+
+
+def test_a_later_success_clears_the_rejected_state(rejecting, monkeypatch):
+    client = UnofficialAPIClient()
+    client.ensure_connected()
+    assert client.status()["credentials_rejected"] is True
+
+    monkeypatch.setattr(
+        UnofficialAPIClient, "_initialize_client", lambda self, allow_login=True: None
+    )
+    client._client = httpx.Client()
+    client._next_retry_at = 0.0
+    client._client = None
+    client.ensure_connected()
+
+    assert client.status()["credentials_rejected"] is False
+    assert client.status()["last_login_diagnostics"] is None
 
 
 def test_rate_limit_is_still_retried(transport):
