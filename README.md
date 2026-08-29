@@ -26,6 +26,7 @@ This server provides comprehensive access to TickTick functionalities via MCP to
 - [Cloud Deployment](#️-cloud-deployment)
 - [Tools Reference](#-tools-reference)
 - [Sample Agent Prompt](#-sample-agent-prompt)
+- [Tests](#-tests)
 - [Contributing](#-contributing)
 - [License](#-license)
 
@@ -176,10 +177,16 @@ These require `TICKTICK_USERNAME` and `TICKTICK_PASSWORD` to be set:
 
 | Tool | Description |
 |------|-------------|
-| `ticktick_pin_task` | Pin a task to the top of the list |
-| `ticktick_unpin_task` | Unpin a task |
-| `ticktick_set_repeat_from` | Set whether recurring task repeats from due date or completion date |
-| `ticktick_get_task_activity` | Get activity log for a task (repeats, due date changes, completions) |
+| `unofficial_get_task` / `unofficial_get_all` / `unofficial_get_tasks_from_project` / `unofficial_filter_tasks` | Fresh, uncached reads |
+| `unofficial_create_task` / `unofficial_update_task` / `unofficial_delete_task` / `unofficial_move_task` | Full CRUD, including recurrence and status the official API can't set |
+| `unofficial_pin_task` / `unofficial_unpin_task` | Pin or unpin a task |
+| `unofficial_get_task_activity` | Activity log for a task (repeats, due date changes, completions) |
+| `unofficial_make_subtask` / `unofficial_remove_subtask` | Nest or un-nest a single task |
+| `unofficial_batch_make_subtasks` | Link many parent/child pairs in one `batch/taskParent` call |
+| `unofficial_set_task_location` / `unofficial_remove_task_location` | Attach or clear a geofenced location |
+| `unofficial_add_checklist_item` / `unofficial_update_checklist_item` / `unofficial_remove_checklist_item` | Manage the `items[]` checklist |
+| `unofficial_convert_checklist_item_to_task` / `unofficial_convert_task_to_checklist_item` | Convert between checklist items and tasks |
+| `unofficial_experimental_api_call` | Raw v2 API call for experimentation |
 
 ### Task Properties
 
@@ -188,10 +195,61 @@ When creating or updating tasks:
 | Property | Format | Example |
 |----------|--------|---------|
 | `priority` | 0=None, 1=Low, 3=Medium, 5=High | `5` |
-| `start_date` / `due_date` | ISO 8601 with timezone | `"2024-07-26T10:00:00+0000"` |
+| `start_date` / `due_date` | Local date or date-time (see below) | `"2024-07-26T10:00:00"` |
+| `time_zone` | IANA timezone name | `"America/New_York"` |
 | `reminders` | RFC 5545 TRIGGER array | `["TRIGGER:PT0S", "TRIGGER:-PT30M"]` |
 | `repeat_flag` | RFC 5545 RRULE | `"RRULE:FREQ=DAILY;INTERVAL=1"` |
 | `tags` | String array | `["work", "urgent"]` |
+| `location` | Geofence object (see below) | `{"address": "...", "loc": {...}}` |
+
+### Dates and time zones
+
+Dates passed to the unofficial tools are **local wall-clock time in `time_zone`**.
+They are converted to UTC before being sent, so `"2026-08-29T09:30:00"` with
+`time_zone="America/New_York"` is stored as `2026-08-29T13:30:00.000+0000` and shows
+as 9:30 AM in the app. Pass the time the user actually said — don't pre-convert.
+
+- **Timed task** — include a time: `"2026-08-29T09:30:00"`.
+- **All-day task** — date only: `"2026-08-29"`. All-day dates are date-only
+  semantically and are *not* shifted; TickTick applies the task's `timeZone` itself.
+- `is_all_day` is inferred from the date (time component → timed), and an explicit
+  value always wins.
+
+### Task locations
+
+`unofficial_set_task_location` attaches a geofenced reminder. The v2 API is unusually
+unforgiving here, so the tool normalizes the payload and verifies the write:
+
+```json
+"location": {
+  "alias": "Mattress Recycling",
+  "address": "525 Riverside Ave, Burlington, VT 05401",
+  "shortAddress": "525 Riverside Ave",
+  "loc": { "latitude": 44.4893668, "longitude": -73.2027386 },
+  "radius": 300,
+  "transitionType": 1
+}
+```
+
+- Coordinates **must** be nested under `loc`. Top-level `latitude`/`longitude` and
+  GeoJSON `{"type": "Point", "coordinates": [lng, lat]}` are accepted with a `200`
+  and then **silently discarded** — the tools rewrite both forms into `loc`.
+- A `200` proves nothing. Every location write is read back, and the result carries
+  `location_verified`.
+- `radius` is in **meters** (default 300). `transitionType`: `1` = arrive, `2` = leave.
+- `removed` is server-managed — never set it.
+
+### Batch updates
+
+`POST /api/v2/batch/task` **nulls any field you omit**, so every write in
+`unofficial_tools.py` fetches the full task, merges the change, and posts the whole
+object back. Follow that read-merge-write pattern for any new tool.
+
+Hierarchy is the exception: `parentId` inside a `batch/task` `{"add": [...]}` payload
+is ignored on create, so parent/child links always need a separate
+`batch/taskParent` call (`unofficial_batch_make_subtasks`). In its response, a
+parent's `childIds` can be stale mid-transaction — the children's `parentId` values
+are authoritative.
 
 ## 🤖 Sample Agent Prompt
 
@@ -243,6 +301,22 @@ When creating or updating tasks:
 
    // Pin an important task
    ticktick_pin_task(task_id="...")
+```
+
+## 🧪 Tests
+
+```bash
+uv sync --group dev
+uv run pytest
+```
+
+The default run is offline — it drives the tools against an in-memory fake of the v2
+API and asserts on the exact JSON sent. The live round-trip tests in
+`tests/test_live_api.py` create and delete throwaway tasks in your real Inbox and are
+opt-in:
+
+```bash
+TICKTICK_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_api.py
 ```
 
 ## 🤝 Contributing

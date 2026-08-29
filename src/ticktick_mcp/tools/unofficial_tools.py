@@ -9,19 +9,29 @@ These tools use direct API calls to unofficial v2 endpoints:
 - Fresh data fetches (no caching!)
 - Proper subtask relationships (parentId/childIds via batch/taskParent)
 - Checklist item management (items[] array - add, update, remove, convert)
+- Geofenced task locations (arrive/leave reminders)
 
 CHECKLIST ITEMS vs SUBTASKS:
 - Checklist items: Embedded in task's items[] array. Simple checkbox list.
   Use unofficial_add_checklist_item, unofficial_update_checklist_item, etc.
 - Subtasks: Separate tasks with parentId/childIds. True task hierarchy.
-  Use unofficial_make_subtask, unofficial_remove_subtask.
+  Use unofficial_make_subtask for one pair, unofficial_batch_make_subtasks for many,
+  unofficial_remove_subtask to un-nest.
+
+DATES: date/time arguments are LOCAL wall-clock time in the task's time_zone and are
+converted to UTC before being sent. Pass the time the user said; do not pre-convert.
+
+BATCH UPDATES: /api/v2/batch/task nulls any field missing from the payload, so every
+write here fetches the full task, merges, and posts the whole object back.
 
 Requires TICKTICK_USERNAME and TICKTICK_PASSWORD environment variables.
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from ticktick_mcp.mcp_instance import mcp
 from ticktick_mcp.unofficial_client import UnofficialAPIClient, get_client
@@ -35,6 +45,8 @@ BATCH_CHECK = "/api/v2/batch/check/0"
 BATCH_TASK = "/api/v2/batch/task"
 BATCH_TASK_PROJECT = "/api/v2/batch/taskProject"
 BATCH_TASK_PARENT = "/api/v2/batch/taskParent"
+# Keep taskParent request bodies to a sane size; the endpoint takes a plain array.
+BATCH_TASK_PARENT_CHUNK = 50
 TASK_ACTIVITY = "/api/v1/task/activity/{task_id}"
 TASK_BY_ID = "/api/v2/task/{task_id}"
 
@@ -77,6 +89,241 @@ def _normalize_repeat_from(value: str | None) -> str | None:
     elif normalized in ("due_date", "due", "0"):
         return "0"
     return value  # Pass through if already "0" or "1"
+
+
+# ==================== Date/Time Helpers ====================
+
+# What TickTick stores and returns for a timed field: UTC, milliseconds, no colon
+# in the offset.
+API_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S.000+0000"
+
+_TIME_COMPONENT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
+_COMPACT_OFFSET_RE = re.compile(r"([+-]\d{2})(\d{2})$")
+
+
+def _zone(time_zone: str) -> ZoneInfo:
+    """Resolve an IANA timezone name, with a clear error instead of a stack trace."""
+    try:
+        return ZoneInfo(time_zone)
+    except Exception as e:
+        raise ValueError(f"Unknown time_zone {time_zone!r}: {e}") from e
+
+
+def _has_time_component(value: str | None) -> bool:
+    """True when a date string carries a clock time ("2026-08-29T09:30:00")."""
+    return bool(value) and bool(_TIME_COMPONENT_RE.match(value.strip()))
+
+
+def _parse_datetime_input(value: str) -> datetime:
+    """
+    Parse a caller-supplied date or datetime string.
+
+    Accepts "2026-08-29", "2026-08-29T09:30", "2026-08-29T09:30:00",
+    "2026-08-29 09:30:00", "2026-08-29T13:30:00Z" and TickTick's own
+    "2026-08-29T13:30:00.000+0000". Returns a naive datetime when the input
+    carries no offset, an aware one when it does.
+    """
+    raw = value.strip().replace(" ", "T")
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    # TickTick serializes offsets without a colon ("+0000"); fromisoformat wants
+    # "+00:00" on Python < 3.11.
+    match = _COMPACT_OFFSET_RE.search(raw)
+    if match:
+        raw = raw[: match.start()] + f"{match.group(1)}:{match.group(2)}"
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError as e:
+        raise ValueError(f"Unrecognized date/time value {value!r}: {e}") from e
+
+
+def _format_datetime_field(
+    value: str | None,
+    time_zone: str,
+    is_all_day: bool,
+) -> str | None:
+    """
+    Convert a caller-supplied date/datetime into what the v2 API expects.
+
+    Timed tasks: a naive string is LOCAL wall-clock time in `time_zone`. It is
+    localized, converted to UTC and serialized as "%Y-%m-%dT%H:%M:%S.000+0000".
+    Passing the naive string straight through makes TickTick read it as UTC, which
+    silently shifts the task by the zone's offset (a 9:30 AM America/New_York task
+    stored as 09:30 UTC fires at 5:30 AM local).
+
+    All-day tasks: date-only semantically, so the date is passed through
+    unconverted and TickTick applies the task's own timeZone (storing, e.g.,
+    T04:00:00.000+0000 for America/New_York in summer). Converting here as well
+    would double-shift it. An input that already carries an offset is first viewed
+    in `time_zone` so the calendar date is the local one.
+    """
+    if value is None:
+        return None
+
+    dt = _parse_datetime_input(value)
+    tz = _zone(time_zone)
+
+    if is_all_day:
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(tz)
+        return dt.strftime("%Y-%m-%d")
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz)
+    return dt.astimezone(timezone.utc).strftime(API_DATETIME_FORMAT)
+
+
+def _resolve_is_all_day(
+    explicit: bool | None,
+    date_values: list[str | None],
+    current: bool | None = None,
+) -> bool:
+    """
+    Decide whether a write is all-day.
+
+    An explicit flag always wins. Otherwise a date string carrying a clock time
+    means timed, and failing that the task's stored value (or all-day, the
+    documented default for new tasks) is kept.
+    """
+    if explicit is not None:
+        return explicit
+    if any(_has_time_component(v) for v in date_values):
+        return False
+    if current is not None:
+        return bool(current)
+    return True
+
+
+# ==================== Location Helpers ====================
+
+DEFAULT_LOCATION_RADIUS = 300  # meters
+TRANSITION_ARRIVE = 1
+TRANSITION_LEAVE = 2
+
+
+def _build_location(
+    address: str,
+    latitude: float,
+    longitude: float,
+    alias: str | None = None,
+    short_address: str | None = None,
+    radius: float = DEFAULT_LOCATION_RADIUS,
+    transition_type: int = TRANSITION_ARRIVE,
+) -> dict[str, Any]:
+    """
+    Build the one location shape TickTick's v2 API actually persists.
+
+    Coordinates MUST be nested under "loc". See _normalize_location for the
+    shapes the API accepts with a 200 and then throws away.
+    """
+    if transition_type not in (TRANSITION_ARRIVE, TRANSITION_LEAVE):
+        raise ValueError("transition_type must be 1 (arrive/entering) or 2 (leave/exiting)")
+
+    return {
+        "alias": alias if alias is not None else address,
+        "address": address,
+        "shortAddress": short_address if short_address is not None else address,
+        "loc": {"latitude": float(latitude), "longitude": float(longitude)},
+        "radius": float(radius),
+        "transitionType": int(transition_type),
+    }
+
+
+def _normalize_location(location: dict[str, Any] | None) -> dict[str, Any] | None:
+    """
+    Coerce a caller-supplied location dict into the shape the API persists.
+
+    TickTick only stores coordinates nested under "loc". These forms return 200 and
+    are then SILENTLY DISCARDED, so they are rewritten here rather than sent:
+      - top-level {"latitude": ..., "longitude": ...}  -> loc comes back null
+      - GeoJSON {"type": "Point", "coordinates": [lng, lat]}
+            -> loc comes back {"longitude": null, "latitude": null}
+
+    "removed" is server-managed and is dropped if present.
+    """
+    if location is None:
+        return None
+    if not isinstance(location, dict):
+        raise ValueError("location must be an object")
+
+    normalized = {k: v for k, v in location.items() if k != "removed"}
+
+    def _from_geojson(candidate: Any) -> tuple[Any, Any] | None:
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("type") == "Point"
+            and isinstance(candidate.get("coordinates"), (list, tuple))
+            and len(candidate["coordinates"]) >= 2
+        ):
+            lng, lat = candidate["coordinates"][0], candidate["coordinates"][1]
+            return lat, lng
+        return None
+
+    latitude = longitude = None
+
+    loc = normalized.pop("loc", None)
+    if isinstance(loc, dict):
+        geo = _from_geojson(loc)
+        if geo:
+            latitude, longitude = geo
+        else:
+            latitude, longitude = loc.get("latitude"), loc.get("longitude")
+
+    geo = _from_geojson(normalized)
+    if geo and latitude is None and longitude is None:
+        latitude, longitude = geo
+    normalized.pop("type", None)
+    normalized.pop("coordinates", None)
+
+    if latitude is None:
+        latitude = normalized.get("latitude")
+    if longitude is None:
+        longitude = normalized.get("longitude")
+    normalized.pop("latitude", None)
+    normalized.pop("longitude", None)
+
+    if latitude is None or longitude is None:
+        raise ValueError(
+            "location needs a latitude and a longitude, e.g. "
+            '{"address": "...", "loc": {"latitude": 44.4893668, "longitude": -73.2027386}}'
+        )
+
+    normalized["loc"] = {"latitude": float(latitude), "longitude": float(longitude)}
+    normalized.setdefault("radius", DEFAULT_LOCATION_RADIUS)
+    normalized.setdefault("transitionType", TRANSITION_ARRIVE)
+    if normalized.get("address") and normalized.get("alias") is None:
+        normalized["alias"] = normalized["address"]
+    return normalized
+
+
+def _location_coords(task: dict | None) -> dict[str, Any]:
+    """Pull loc out of a task, tolerating a missing or null location."""
+    location = (task or {}).get("location") or {}
+    return location.get("loc") or {}
+
+
+def _verify_location_written(
+    client: UnofficialAPIClient,
+    task_id: str,
+    expect_location: bool,
+) -> dict[str, Any]:
+    """
+    Read the task back and confirm the location really landed.
+
+    A 200 from batch/task means nothing for locations — a wrongly shaped location
+    is accepted and dropped. Only the read-back is evidence.
+    """
+    task = client.call_api(TASK_BY_ID.format(task_id=task_id))
+    if not isinstance(task, dict):
+        return {"location_verified": False, "location": None}
+
+    stored = task.get("location")
+    if expect_location:
+        coords = _location_coords(task)
+        verified = coords.get("latitude") is not None and coords.get("longitude") is not None
+    else:
+        verified = not stored or stored.get("removed") is True
+    return {"location_verified": verified, "location": stored}
 
 
 # ==================== Activity & Pin Tools ====================
@@ -503,11 +750,12 @@ def unofficial_create_task(
     priority: int = 0,
     tags: list[str] | None = None,
     reminders: list[str] | None = None,
-    is_all_day: bool = True,
+    is_all_day: bool | None = None,
     repeat_flag: str | None = None,
     repeat_from: str | None = None,
     specific_dates: list[str] | None = None,
     time_zone: str = "America/New_York",
+    location: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Create a new task via the unofficial API.
@@ -525,8 +773,13 @@ def unofficial_create_task(
     Timed tasks (only when user specifies a clock time):
         start_date="2026-02-06T14:00:00"    (include time)
         due_date="2026-02-06T14:00:00"      (include time)
-        is_all_day=False                     (must explicitly set)
+        is_all_day=False                     (inferred from the time component)
         time_zone="America/New_York"
+
+    Times you pass are LOCAL wall-clock time in `time_zone`. They are converted to
+    UTC before being sent, so "2026-02-06T14:00:00" with America/New_York is stored
+    as "2026-02-06T19:00:00.000+0000" and shows as 2:00 PM in the app. Pass the
+    time the user said; do NOT pre-convert to UTC yourself.
 
     ALWAYS:
         - Set BOTH start_date AND due_date to the same value
@@ -551,7 +804,10 @@ def unofficial_create_task(
             - ["TRIGGER:-PT1H"] = 1 hour before
             - ["TRIGGER:-P1D"] = 1 day before
             Multiple: ["TRIGGER:PT0S", "TRIGGER:-PT30M"]
-        is_all_day: Whether it's an all-day task (default: True). Set to False for timed tasks.
+        is_all_day: Whether it's an all-day task. When omitted it is inferred from the
+            dates: a date with a time component ("2026-02-06T14:00:00") means timed,
+            a date-only value ("2026-02-06") or no dates at all means all-day.
+            Pass it explicitly to override the inference.
         repeat_flag: Recurrence rule (RRULE format). Examples:
             - "RRULE:FREQ=DAILY;INTERVAL=1" = Every day
             - "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR" = Mon/Wed/Fri
@@ -562,10 +818,28 @@ def unofficial_create_task(
         specific_dates: List of specific dates in YYYY-MM-DD format.
             If provided, creates an ERULE instead of RRULE (overrides repeat_flag).
             Example: ["2026-02-05", "2026-02-10", "2026-02-15"]
-        time_zone: Timezone (e.g., "America/New_York"). Always included when dates are set.
+        time_zone: IANA timezone (e.g., "America/New_York"). Interprets the local
+            times in start_date/due_date and is stored on the task.
+        location: Optional geofenced location, set inline at creation. Same shape and
+            same silent-discard gotchas as unofficial_set_task_location:
+
+                {
+                    "alias": "Mattress Recycling",
+                    "address": "525 Riverside Ave, Burlington, VT 05401",
+                    "shortAddress": "525 Riverside Ave",
+                    "loc": {"latitude": 44.4893668, "longitude": -73.2027386},
+                    "radius": 300,
+                    "transitionType": 1
+                }
+
+            Coordinates MUST be nested under "loc" — top-level latitude/longitude and
+            GeoJSON are accepted with a 200 and then silently dropped by the API, so
+            this tool rewrites those forms into "loc" before sending. The created task
+            is read back and the result carries "location_verified".
 
     Returns:
-        Created task details
+        Created task details. When a location was set, also "location_verified"
+        (bool) and the stored "location" as read back from the API.
 
     Examples:
         # All-day task (default)
@@ -609,21 +883,27 @@ def unofficial_create_task(
     try:
         client = _get_api_client()
 
+        all_day = _resolve_is_all_day(is_all_day, [start_date, due_date])
+
         task = {
             "title": title,
             "projectId": project_id,
             "priority": priority,
             "status": 0,
             "timeZone": time_zone,
-            "isAllDay": is_all_day,
+            "isAllDay": all_day,
         }
 
         if content:
             task["content"] = content
+        # Local wall-clock -> UTC. Sending the naive string makes TickTick read it
+        # as UTC and store the task offset by the zone's UTC offset.
         if start_date:
-            task["startDate"] = start_date
+            task["startDate"] = _format_datetime_field(start_date, time_zone, all_day)
         if due_date:
-            task["dueDate"] = due_date
+            task["dueDate"] = _format_datetime_field(due_date, time_zone, all_day)
+        if location is not None:
+            task["location"] = _normalize_location(location)
         if tags:
             task["tags"] = tags
         if desc is not None:
@@ -638,7 +918,11 @@ def unofficial_create_task(
             formatted_dates = sorted([d.replace("-", "") for d in specific_dates])
             task["repeatFlag"] = f"ERULE:NAME=CUSTOM;BYDATE={','.join(formatted_dates)}"
             first_date = min(specific_dates)
-            task["repeatFirstDate"] = f"{first_date}T05:00:00.000+0000"
+            # Midnight local on the first date, in UTC. This used to be hardcoded to
+            # T05:00 (EST), which is an hour off in EDT and wrong in every other zone.
+            task["repeatFirstDate"] = _format_datetime_field(
+                f"{first_date}T00:00:00", time_zone, is_all_day=False
+            )
             task["repeatFrom"] = "0"
         elif repeat_flag:
             task["repeatFlag"] = repeat_flag
@@ -655,7 +939,13 @@ def unofficial_create_task(
                 task["id"] = task_id
                 task["etag"] = id2etag[task_id]
 
-        return {"success": True, "task": task}
+        response: dict[str, Any] = {"success": True, "task": task}
+        if location is not None and task.get("id"):
+            # A 200 does not mean the location stuck - only the read-back does.
+            response.update(
+                _verify_location_written(client, task["id"], expect_location=True)
+            )
+        return response
     except Exception as e:
         logger.error(f"Failed to create task: {e}")
         return {"error": str(e)}
@@ -678,6 +968,7 @@ def unofficial_update_task(
     repeat_from: str | None = None,
     specific_dates: list[str] | None = None,
     time_zone: str = "America/New_York",
+    location: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Update an existing task via the unofficial API.
@@ -698,6 +989,11 @@ def unofficial_update_task(
         due_date="2026-02-08T14:00:00"      (include time)
         time_zone="America/New_York"
         is_all_day is optional here but safe to include as False
+
+    Times you pass are LOCAL wall-clock time in `time_zone`. They are converted to
+    UTC before being sent, so "2026-02-08T14:00:00" with America/New_York is stored
+    as "2026-02-08T19:00:00.000+0000" and shows as 2:00 PM in the app. Pass the
+    time the user said; do NOT pre-convert to UTC yourself.
 
     Converting timed → all-day:
         is_all_day=True                     (REQUIRED — explicit flag)
@@ -740,7 +1036,8 @@ def unofficial_update_task(
             - ["TRIGGER:-P1D"] = 1 day before
             Multiple: ["TRIGGER:PT0S", "TRIGGER:-PT30M"]
         is_all_day: Whether this is an all-day task. Required when converting between
-            timed and all-day tasks.
+            timed and all-day tasks. When omitted it is inferred: a date with a time
+            component means timed, otherwise the task's existing value is kept.
         repeat_flag: New recurrence rule (RRULE format). Examples:
             - "RRULE:FREQ=DAILY;INTERVAL=1" = Every day
             - "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR" = Mon/Wed/Fri
@@ -751,10 +1048,29 @@ def unofficial_update_task(
         specific_dates: List of specific dates in YYYY-MM-DD format.
             If provided, replaces any existing recurrence with an ERULE.
             Example: ["2026-02-05", "2026-02-10", "2026-02-15"]
-        time_zone: Timezone (e.g., "America/New_York"). Always included when dates are updated.
+        time_zone: IANA timezone (e.g., "America/New_York"). Interprets the local
+            times in start_date/due_date and is stored on the task when dates change.
+        location: Optional geofenced location to set (leave unset to keep the task's
+            current location; use unofficial_remove_task_location to clear it). Same
+            shape and same silent-discard gotchas as unofficial_set_task_location:
+
+                {
+                    "alias": "Mattress Recycling",
+                    "address": "525 Riverside Ave, Burlington, VT 05401",
+                    "shortAddress": "525 Riverside Ave",
+                    "loc": {"latitude": 44.4893668, "longitude": -73.2027386},
+                    "radius": 300,
+                    "transitionType": 1
+                }
+
+            Coordinates MUST be nested under "loc" — top-level latitude/longitude and
+            GeoJSON are accepted with a 200 and then silently dropped by the API, so
+            this tool rewrites those forms into "loc" before sending. The task is read
+            back and the result carries "location_verified".
 
     Returns:
-        Updated task details
+        Updated task details. When a location was set, also "location_verified"
+        (bool) and the stored "location" as read back from the API.
 
     Examples:
         # Move an all-day task to a new date
@@ -802,21 +1118,31 @@ def unofficial_update_task(
         if not task:
             return {"error": f"Task not found: {task_id}"}
 
+        # An explicit flag wins; otherwise infer from the incoming dates, falling
+        # back to what the task already is.
+        all_day = _resolve_is_all_day(
+            is_all_day, [start_date, due_date], current=task.get("isAllDay")
+        )
+
         # Update fields (only if provided)
         if title is not None:
             task["title"] = title
         if content is not None:
             task["content"] = content
+        # Local wall-clock -> UTC. Sending the naive string makes TickTick read it
+        # as UTC and store the task offset by the zone's UTC offset.
         if start_date is not None:
-            task["startDate"] = start_date
+            task["startDate"] = _format_datetime_field(start_date, time_zone, all_day)
         if due_date is not None:
-            task["dueDate"] = due_date
+            task["dueDate"] = _format_datetime_field(due_date, time_zone, all_day)
         if priority is not None:
             task["priority"] = priority
         if tags is not None:
             task["tags"] = tags
-        if is_all_day is not None:
-            task["isAllDay"] = is_all_day
+        if is_all_day is not None or start_date is not None or due_date is not None:
+            task["isAllDay"] = all_day
+        if location is not None:
+            task["location"] = _normalize_location(location)
         if desc is not None:
             task["desc"] = desc
         if reminders is not None:
@@ -841,7 +1167,11 @@ def unofficial_update_task(
             formatted_dates = sorted([d.replace("-", "") for d in specific_dates])
             task["repeatFlag"] = f"ERULE:NAME=CUSTOM;BYDATE={','.join(formatted_dates)}"
             first_date = min(specific_dates)
-            task["repeatFirstDate"] = f"{first_date}T05:00:00.000+0000"
+            # Midnight local on the first date, in UTC. This used to be hardcoded to
+            # T05:00 (EST), which is an hour off in EDT and wrong in every other zone.
+            task["repeatFirstDate"] = _format_datetime_field(
+                f"{first_date}T00:00:00", time_zone, is_all_day=False
+            )
             task["repeatFrom"] = "0"
         else:
             # Handle repeat_flag update
@@ -859,7 +1189,13 @@ def unofficial_update_task(
         if isinstance(result, dict) and task_id in result.get("id2etag", {}):
             task["etag"] = result["id2etag"][task_id]
 
-        return {"success": True, "task": task}
+        response: dict[str, Any] = {"success": True, "task": task}
+        if location is not None:
+            # A 200 does not mean the location stuck - only the read-back does.
+            response.update(
+                _verify_location_written(client, task_id, expect_location=True)
+            )
+        return response
     except Exception as e:
         logger.error(f"Failed to update task: {e}")
         return {"error": str(e)}
@@ -962,6 +1298,10 @@ def unofficial_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str
     This creates TRUE subtasks (separate tasks with hierarchy), not checklist
     items (embedded in items[] array). Both tasks must be in the same project.
 
+    For more than a couple of pairs use unofficial_batch_make_subtasks, which links
+    them all in one request. Note that "parentId" inside a batch/task {"add": [...]}
+    payload is ignored on create — hierarchy always needs a separate call.
+
     Args:
         child_task_id: The task ID to become a subtask
         parent_task_id: The task ID that will become the parent
@@ -1026,6 +1366,141 @@ def unofficial_make_subtask(child_task_id: str, parent_task_id: str) -> dict[str
 
 
 @mcp.tool()
+def unofficial_batch_make_subtasks(
+    links: list[dict[str, str]],
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Link many parent/child task pairs in one call via /api/v2/batch/taskParent.
+
+    Far more efficient than looping unofficial_make_subtask — dozens of
+    relationships go through in a handful of requests instead of one round trip
+    each. Parent and child must live in the same project.
+
+    NOTES:
+      - The parent's childIds array in the immediate response can be STALE
+        mid-transaction. The children's parentId values are authoritative; re-read a
+        parent with unofficial_get_task if you need its final childIds.
+      - Passing "parentId" inside a /api/v2/batch/task {"add": [...]} payload does
+        NOT work — it is ignored on create. Hierarchy always needs this second call.
+
+    Args:
+        links: List of parent/child pairs. Each entry accepts either the friendly
+            keys or the API's own:
+                {"child_task_id": "...", "parent_task_id": "...", "project_id": "..."}
+                {"taskId": "...", "parentId": "...", "projectId": "..."}
+            project_id is optional per link — see below.
+        project_id: Project ID shared by every link. When neither this nor a per-link
+            project_id is given, project IDs are looked up once from batch/check.
+
+    Returns:
+        Dict with the linked pairs, any per-task errors, and the raw API response.
+
+    Example:
+        unofficial_batch_make_subtasks([
+            {"child_task_id": "c1", "parent_task_id": "p1"},
+            {"child_task_id": "c2", "parent_task_id": "p1"},
+        ])
+    """
+    logger.info(f"unofficial_batch_make_subtasks called with {len(links)} link(s)")
+
+    try:
+        client = _get_api_client()
+
+        if not links:
+            return {"error": "links must contain at least one parent/child pair"}
+
+        def pick(link: dict, *keys: str) -> str | None:
+            for key in keys:
+                value = link.get(key)
+                if value:
+                    return value
+            return None
+
+        # Only pay for the batch/check fetch when a project ID is actually missing.
+        project_by_task: dict[str, str] | None = None
+
+        def lookup_projects() -> dict[str, str]:
+            nonlocal project_by_task
+            if project_by_task is None:
+                data = _fetch_all_data(client)
+                tasks = data.get("syncTaskBean", {}).get("update", [])
+                project_by_task = {
+                    t.get("id"): t.get("projectId") for t in tasks if t.get("id")
+                }
+            return project_by_task
+
+        entries: list[dict[str, str]] = []
+        for index, link in enumerate(links):
+            if not isinstance(link, dict):
+                return {"error": f"links[{index}] must be an object"}
+
+            child_id = pick(link, "child_task_id", "taskId", "task_id", "childId")
+            parent_id = pick(link, "parent_task_id", "parentId", "parent_id")
+            if not child_id or not parent_id:
+                return {
+                    "error": (
+                        f"links[{index}] needs both a child and a parent task id "
+                        '(e.g. {"child_task_id": "...", "parent_task_id": "..."})'
+                    )
+                }
+
+            link_project = pick(link, "project_id", "projectId") or project_id
+            if not link_project:
+                projects = lookup_projects()
+                child_project = projects.get(child_id)
+                parent_project = projects.get(parent_id)
+                if not child_project:
+                    return {"error": f"Child task not found: {child_id}"}
+                if not parent_project:
+                    return {"error": f"Parent task not found: {parent_id}"}
+                if child_project != parent_project:
+                    return {
+                        "error": (
+                            f"Tasks must be in the same project: {child_id} is in "
+                            f"{child_project}, {parent_id} is in {parent_project}"
+                        )
+                    }
+                link_project = child_project
+
+            entries.append(
+                {"taskId": child_id, "parentId": parent_id, "projectId": link_project}
+            )
+
+        raw_responses: list[Any] = []
+        errors: dict[str, Any] = {}
+        for start in range(0, len(entries), BATCH_TASK_PARENT_CHUNK):
+            chunk = entries[start : start + BATCH_TASK_PARENT_CHUNK]
+            # Body is a plain array, not the {"add"/"update"/"delete"} envelope.
+            result = client.call_api(BATCH_TASK_PARENT, method="POST", data=chunk)
+            raw_responses.append(result)
+            if isinstance(result, dict):
+                errors.update(result.get("id2error", {}) or {})
+
+        linked = [
+            {"child_task_id": e["taskId"], "parent_task_id": e["parentId"]}
+            for e in entries
+            if e["taskId"] not in errors
+        ]
+
+        logger.info(f"Linked {len(linked)} of {len(entries)} parent/child pair(s)")
+        return {
+            "success": not errors,
+            "linked_count": len(linked),
+            "linked": linked,
+            "errors": errors,
+            "raw_response": raw_responses if len(raw_responses) > 1 else raw_responses[0],
+            "note": (
+                "Children's parentId values are authoritative; a parent's childIds in "
+                "this response can be stale mid-transaction."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"Failed to batch make subtasks: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
 def unofficial_remove_subtask(child_task_id: str) -> dict[str, Any]:
     """
     Remove a subtask relationship, making the child a standalone task.
@@ -1074,6 +1549,180 @@ def unofficial_remove_subtask(child_task_id: str) -> dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Failed to remove subtask: {e}")
+        return {"error": str(e)}
+
+
+# ==================== Location Tools ====================
+
+
+@mcp.tool()
+def unofficial_set_task_location(
+    task_id: str,
+    address: str,
+    latitude: float,
+    longitude: float,
+    alias: str | None = None,
+    short_address: str | None = None,
+    radius: float = DEFAULT_LOCATION_RADIUS,
+    transition_type: int = TRANSITION_ARRIVE,
+) -> dict[str, Any]:
+    """
+    Attach a geofenced location to a task (location-based reminder).
+
+    The task is fetched in full, the location merged in, and the complete object
+    posted back via /api/v2/batch/task — that endpoint NULLS any field you omit, so
+    a partial update would silently wipe the rest of the task.
+
+    HARD-WON API GOTCHAS (all verified by read-back):
+      - Coordinates MUST be nested under "loc" as {"latitude": ..., "longitude": ...}.
+      - Top-level "latitude"/"longitude" on the location object are ACCEPTED with a
+        200 response and then SILENTLY DISCARDED — loc comes back null.
+      - GeoJSON {"type": "Point", "coordinates": [lng, lat]} is also silently
+        discarded — loc comes back {"longitude": null, "latitude": null}.
+      - So a 200 response means NOTHING here. This tool always reads the task back
+        and reports whether loc.latitude / loc.longitude are actually non-null.
+      - "radius" is in meters and comes back as a float. 300 is a reasonable default.
+      - "transitionType": 1 = arrive/entering, 2 = leave/exiting. It comes back null
+        if you omit it, so it is always sent.
+      - "removed" is server-managed — never set it.
+
+    Args:
+        task_id: The task ID to attach the location to
+        address: Full street address, e.g. "525 Riverside Ave, Burlington, VT 05401"
+        latitude: Latitude in decimal degrees, e.g. 44.4893668
+        longitude: Longitude in decimal degrees, e.g. -73.2027386
+        alias: Short display label, e.g. "Mattress Recycling". Defaults to the address.
+        short_address: Abbreviated address, e.g. "525 Riverside Ave". Defaults to the
+            address.
+        radius: Geofence radius in METERS (default 300)
+        transition_type: 1 = remind on arrival (default), 2 = remind on leaving
+
+    Returns:
+        Dict with success, the stored location as read back, and location_verified —
+        which is False if the API accepted the write but dropped the coordinates.
+
+    Example:
+        unofficial_set_task_location(
+            task_id="abc123",
+            alias="Mattress Recycling",
+            address="525 Riverside Ave, Burlington, VT 05401",
+            short_address="525 Riverside Ave",
+            latitude=44.4893668,
+            longitude=-73.2027386,
+            radius=300,
+            transition_type=1,
+        )
+    """
+    logger.info(f"unofficial_set_task_location called for task: {task_id}")
+
+    try:
+        client = _get_api_client()
+
+        location = _build_location(
+            address=address,
+            latitude=latitude,
+            longitude=longitude,
+            alias=alias,
+            short_address=short_address,
+            radius=radius,
+            transition_type=transition_type,
+        )
+
+        # Read-merge-write: batch/task nulls every field absent from the payload.
+        task = client.call_api(TASK_BY_ID.format(task_id=task_id))
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        task["location"] = location
+
+        payload = {"add": [], "update": [task], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        if isinstance(result, dict) and result.get("id2error", {}).get(task_id):
+            return {"error": f"Set location failed: {result['id2error'][task_id]}"}
+
+        verification = _verify_location_written(client, task_id, expect_location=True)
+        if not verification["location_verified"]:
+            return {
+                "error": (
+                    "TickTick accepted the update but did not store the coordinates "
+                    "(loc came back empty). This is the silent-discard failure mode."
+                ),
+                "task_id": task_id,
+                **verification,
+            }
+
+        logger.info(f"Successfully set location on task {task_id}")
+        return {
+            "success": True,
+            "message": f"Location set on task {task_id}",
+            "task_id": task_id,
+            **verification,
+        }
+    except Exception as e:
+        logger.error(f"Failed to set task location: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def unofficial_remove_task_location(task_id: str) -> dict[str, Any]:
+    """
+    Remove the geofenced location from a task.
+
+    Like unofficial_set_task_location, this fetches the full task, clears the
+    location field and posts the complete object back via /api/v2/batch/task — a
+    partial update would null every field left out. The task is then read back to
+    confirm the location is actually gone.
+
+    Args:
+        task_id: The task ID to clear the location from
+
+    Returns:
+        Dict with success status, or an error if the location survived the write
+    """
+    logger.info(f"unofficial_remove_task_location called for task: {task_id}")
+
+    try:
+        client = _get_api_client()
+
+        task = client.call_api(TASK_BY_ID.format(task_id=task_id))
+        if not task:
+            return {"error": f"Task not found: {task_id}"}
+
+        if not task.get("location"):
+            return {
+                "success": True,
+                "message": f"Task {task_id} has no location",
+                "task_id": task_id,
+                "location_verified": True,
+                "location": None,
+            }
+
+        task["location"] = None
+
+        payload = {"add": [], "update": [task], "delete": []}
+        result = client.call_api(BATCH_TASK, method="POST", data=payload)
+
+        if isinstance(result, dict) and result.get("id2error", {}).get(task_id):
+            return {"error": f"Remove location failed: {result['id2error'][task_id]}"}
+
+        verification = _verify_location_written(client, task_id, expect_location=False)
+        if not verification["location_verified"]:
+            return {
+                "error": "TickTick accepted the update but the location is still set",
+                "task_id": task_id,
+                **verification,
+            }
+
+        logger.info(f"Successfully removed location from task {task_id}")
+        return {
+            "success": True,
+            "message": f"Location removed from task {task_id}",
+            "task_id": task_id,
+            **verification,
+        }
+    except Exception as e:
+        logger.error(f"Failed to remove task location: {e}")
         return {"error": str(e)}
 
 
