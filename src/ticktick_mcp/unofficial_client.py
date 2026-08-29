@@ -8,9 +8,13 @@ NO CACHING - every read fetches fresh data from the API.
 This eliminates the stale cache problem that plagued the ticktick-py approach.
 """
 
+import email.utils
 import logging
+import os
+import stat
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -21,6 +25,48 @@ from .config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _session_cache_path() -> Path:
+    """
+    Where the TickTick session token is cached between restarts.
+
+    Defaults next to the OAuth token cache (/tmp on a cloud deploy). Point
+    TICKTICK_SESSION_CACHE at a mounted volume to keep the session across
+    deploys, which is what actually stops the login rate limiting.
+    """
+    override = os.getenv("TICKTICK_SESSION_CACHE")
+    if override:
+        return Path(override).expanduser()
+    from .config import dotenv_dir_path
+
+    return Path(dotenv_dir_path) / ".ticktick-session"
+
+
+def _parse_retry_after(value: Optional[str]) -> Optional[float]:
+    """Parse a Retry-After header, which is either seconds or an HTTP date."""
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    return max(0.0, parsed.timestamp() - time.time())
+
+
+class LoginRateLimited(RuntimeError):
+    """TickTick answered the login endpoint with 429."""
+
+    def __init__(self, message: str, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class UnofficialAPIClient:
@@ -58,6 +104,8 @@ class UnofficialAPIClient:
     # block and never retried, and every tool then reported "not configured".
     RETRY_BASE_SECONDS = 30
     RETRY_MAX_SECONDS = 900
+    # Upper bound on an honoured Retry-After, so a wild value can't wedge us.
+    RETRY_AFTER_MAX_SECONDS = 3600
 
     def __new__(cls):
         if cls._instance is None:
@@ -120,6 +168,10 @@ class UnofficialAPIClient:
                     self.RETRY_BASE_SECONDS * (2 ** (self._failed_attempts - 1)),
                     self.RETRY_MAX_SECONDS,
                 )
+                # When TickTick says how long to wait, believe it over our guess.
+                retry_after = getattr(e, "retry_after", None)
+                if retry_after:
+                    delay = max(delay, min(retry_after, self.RETRY_AFTER_MAX_SECONDS))
                 self._next_retry_at = time.monotonic() + delay
                 self._last_error = str(e)
                 logger.error(
@@ -141,6 +193,9 @@ class UnofficialAPIClient:
                 self._client.close()
                 self._client = None
             self._access_token = None
+            # The cached session is what just got rejected - drop it so the
+            # reconnect actually logs in rather than replaying a dead token.
+            self._clear_cached_session()
             # An explicit reconnect should not be blocked by an earlier backoff.
             self._next_retry_at = 0.0
         return self.ensure_connected()
@@ -188,21 +243,91 @@ class UnofficialAPIClient:
         We ALWAYS call _login() with username/password to get the session token.
         """
         # Create httpx client with default headers
-        self._client = httpx.Client(
+        client = httpx.Client(
             headers=self.DEFAULT_HEADERS,
             timeout=30.0,
             follow_redirects=True
         )
-        
-        # Always do username/password login to get session token
-        # The OAuth2 token in cache is for the official API, NOT the unofficial API
-        self._login()
-        
-        # Load user settings (timezone, profile_id)
-        self._load_settings()
-        
-        # Do initial sync to get inbox_id
-        self._initial_sync()
+        self._client = client
+
+        try:
+            # Reuse a cached session when we have one. TickTick rate-limits
+            # /user/signon hard, so logging in on every boot is what gets a
+            # frequently-redeployed server throttled (429).
+            if not self._resume_cached_session():
+                self._login()
+                self._save_session()
+                self._load_settings()
+
+            # Do initial sync to get inbox_id
+            self._initial_sync()
+        except Exception:
+            self._client = None
+            client.close()
+            raise
+
+    def _resume_cached_session(self) -> bool:
+        """
+        Try the cached session token. Returns True when it is still valid.
+
+        The validation request doubles as the settings load, so resuming costs
+        exactly one request and no login.
+        """
+        token = self._read_cached_token()
+        if not token:
+            return False
+
+        self._client.cookies.set("t", token)
+        try:
+            response = self._client.get(
+                self.BASE_URL + "user/preferences/settings",
+                params={"includeWeb": True},
+            )
+        except Exception as e:
+            logger.warning(f"Could not validate cached session: {e}")
+            self._client.cookies.clear()
+            return False
+
+        if response.status_code == 200:
+            self._access_token = token
+            self._apply_settings(response.json())
+            logger.info("Reused cached TickTick session (no login needed)")
+            return True
+
+        logger.info(
+            f"Cached session rejected ({response.status_code}); logging in again"
+        )
+        self._client.cookies.clear()
+        self._clear_cached_session()
+        return False
+
+    def _read_cached_token(self) -> Optional[str]:
+        try:
+            path = _session_cache_path()
+            if not path.is_file():
+                return None
+            return path.read_text().strip() or None
+        except Exception as e:
+            logger.warning(f"Could not read session cache: {e}")
+            return None
+
+    def _save_session(self) -> None:
+        if not self._access_token:
+            return
+        try:
+            path = _session_cache_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(self._access_token)
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # a credential: owner only
+            logger.info(f"Cached TickTick session token at {path}")
+        except Exception as e:
+            logger.warning(f"Could not write session cache: {e}")
+
+    def _clear_cached_session(self) -> None:
+        try:
+            _session_cache_path().unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"Could not clear session cache: {e}")
     
     def _login(self):
         """Authenticate with username/password to get session token."""
@@ -215,7 +340,13 @@ class UnofficialAPIClient:
         
         logger.info(f"Logging in as {USERNAME}")
         response = self._client.post(url, json=payload, params=params)
-        
+
+        if response.status_code == 429:
+            retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+            raise LoginRateLimited(
+                f"Login failed: 429 - {response.text[:200]}", retry_after
+            )
+
         if response.status_code != 200:
             raise RuntimeError(f"Login failed: {response.status_code} - {response.text[:200]}")
         
@@ -240,7 +371,10 @@ class UnofficialAPIClient:
             logger.warning(f"Failed to load settings: {response.status_code}")
             return
         
-        data = response.json()
+        self._apply_settings(response.json())
+
+    def _apply_settings(self, data: dict) -> None:
+        """Store the fields we care about from a settings payload."""
         self._time_zone = data.get("timeZone", "America/New_York")
         self._profile_id = data.get("id")
         logger.info(f"Loaded settings: timezone={self._time_zone}")

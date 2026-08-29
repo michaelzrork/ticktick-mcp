@@ -125,6 +125,35 @@ TICKTICK_PASSWORD=your_ticktick_password
 # Required: Enable HTTP transport for cloud
 # ("sse" is still accepted and behaves identically - both serve /mcp and /sse)
 MCP_TRANSPORT=http
+
+# Optional but recommended: where to cache the unofficial API's session token.
+# Point this at a mounted volume so the session survives redeploys.
+TICKTICK_SESSION_CACHE=/data/.ticktick-session
+```
+
+### Avoiding login rate limits (429)
+
+The unofficial API authenticates with username/password against TickTick's login
+endpoint, which is throttled aggressively. Without a cache, every restart is
+another login — a handful of redeploys in one debugging session is enough to earn
+a `429`, and then every `unofficial_*` tool fails while the official `ticktick_*`
+tools keep working (they use an OAuth bearer token and never hit a login endpoint).
+
+The session token is cached and reused, so a restart normally makes **no** login
+call. `TICKTICK_SESSION_CACHE` defaults to the token-cache directory, which is
+`/tmp` on a cloud deploy — that survives container restarts but not redeploys.
+Point it at a mounted volume to survive those too.
+
+If you do get throttled, the server backs off (30s up to 15min, or whatever
+`Retry-After` asks for) and reconnects on its own — no redeploy needed. Check
+`/status` to see exactly where it is:
+
+```json
+"unofficial_api": {
+  "credentials_configured": true, "connected": false,
+  "last_error": "Login failed: 429 - ", "failed_attempts": 3,
+  "retry_in_seconds": 71
+}
 ```
 
 ### Getting Your Access Token
