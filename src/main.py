@@ -25,6 +25,7 @@ from ticktick_mcp import config
 
 # Import the MCP instance
 from ticktick_mcp.mcp_instance import mcp
+from ticktick_mcp.unofficial_client import client_status as unofficial_client_status
 
 # Import and register tools
 # These imports cause the @mcp.tool() decorators to register the tools
@@ -34,13 +35,22 @@ from ticktick_mcp.tools import task_tools  # noqa: F401
 from ticktick_mcp.tools import unofficial_tools  # noqa: F401
 logging.info("Tool registration complete.")
 
-# Eager init - login to unofficial API at startup, not on first tool call
+# Prepare the unofficial API client. This resumes a cached session if there is
+# one, but never spends a fresh login at startup: TickTick rate-limits its login
+# endpoint, so booting must not cost a login on its own. The first unofficial_*
+# tool call authenticates if needed.
 from ticktick_mcp.unofficial_client import UnofficialAPIClient
-try:
-    UnofficialAPIClient()
-    logging.info("Unofficial API client initialized successfully.")
-except Exception as e:
-    logging.error(f"Failed to initialize unofficial API client: {e}")
+_unofficial = UnofficialAPIClient()
+logging.info(f"Unofficial API device id: {_unofficial.device_id}")
+if _unofficial.ensure_connected(allow_login=False):
+    logging.info("Unofficial API: resumed cached session, no login needed.")
+elif _unofficial.credentials_configured():
+    logging.info("Unofficial API: no cached session; will authenticate on first use.")
+else:
+    logging.warning(
+        "Unofficial API: TICKTICK_USERNAME / TICKTICK_PASSWORD not set; "
+        "unofficial_* tools are unavailable."
+    )
 
 
 # --- OAuth Routes (for cloud deployment) --- #
@@ -131,13 +141,16 @@ def main():
             return Response("OK", status_code=200)
 
         async def status_check(request):
-            """Return server status including auth state."""
+            """Return server status including auth state for both APIs."""
             client = config.get_ticktick_client()
             return JSONResponse({
                 "status": "running",
                 "authenticated": client is not None,
                 "user_id_configured": config.USER_ID is not None,
-                "inbox_available": client.inbox_id if client else None
+                "inbox_available": client.inbox_id if client else None,
+                # The official and unofficial clients authenticate differently and
+                # fail independently, so report them separately.
+                "unofficial_api": unofficial_client_status(),
             })
 
         app = Starlette(

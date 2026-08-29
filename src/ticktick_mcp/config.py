@@ -43,8 +43,20 @@ ACCESS_TOKEN = os.getenv("TICKTICK_ACCESS_TOKEN")
 USER_ID = os.getenv("TICKTICK_USER_ID")
 
 # --- Load from .env file if not all vars are set ---
-if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
-    logger.info("Environment variables not fully set, loading from .env file...")
+_REQUIRED_VARS = {
+    "TICKTICK_CLIENT_ID": CLIENT_ID,
+    "TICKTICK_CLIENT_SECRET": CLIENT_SECRET,
+    "TICKTICK_REDIRECT_URI": REDIRECT_URI,
+    "TICKTICK_USERNAME": USERNAME,
+    "TICKTICK_PASSWORD": PASSWORD,
+}
+
+if not all(_REQUIRED_VARS.values()):
+    _missing = [name for name, value in _REQUIRED_VARS.items() if not value]
+    logger.info(
+        f"Missing environment variables ({', '.join(_missing)}); "
+        "loading from .env file..."
+    )
 
     dotenv_dir_path = Path(args.dotenv_dir).expanduser()
 
@@ -58,8 +70,13 @@ if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
     dotenv_path = dotenv_dir_path / ".env"
 
     if not dotenv_path.is_file():
-        logger.error(f"Required .env file not found at {dotenv_path}")
-        logger.error("Please create the .env file with your TickTick credentials.")
+        logger.error(
+            f"Missing required environment variables: {', '.join(_missing)}"
+        )
+        logger.error(
+            f"Set them in the environment, or create {dotenv_path} with them. "
+            "(On a hosting platform, set them as service variables.)"
+        )
         sys.exit(1)
 
     loaded = load_dotenv(override=True, dotenv_path=dotenv_path)
@@ -83,8 +100,21 @@ else:
     logger.info("Using environment variables provided by hosting platform")
 
 # Final validation
-if not all([CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, USERNAME, PASSWORD]):
-    logger.error("Missing required environment variables")
+_still_missing = [
+    name
+    for name, value in {
+        "TICKTICK_CLIENT_ID": CLIENT_ID,
+        "TICKTICK_CLIENT_SECRET": CLIENT_SECRET,
+        "TICKTICK_REDIRECT_URI": REDIRECT_URI,
+        "TICKTICK_USERNAME": USERNAME,
+        "TICKTICK_PASSWORD": PASSWORD,
+    }.items()
+    if not value
+]
+if _still_missing:
+    logger.error(
+        f"Missing required environment variables: {', '.join(_still_missing)}"
+    )
     sys.exit(1)
 
 # --- Set dotenv_dir_path for token cache ---

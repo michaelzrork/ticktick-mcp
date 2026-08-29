@@ -123,6 +123,48 @@ TICKTICK_PASSWORD=your_ticktick_password
 
 # Required: Enable SSE transport for cloud
 MCP_TRANSPORT=sse
+
+# Optional: where the unofficial API's device id and session token are kept.
+# Defaults to the token-cache dir (/tmp on a cloud deploy, which survives
+# container restarts but not redeploys). Point it at a mounted volume so both
+# survive redeploys - see "Login rate limits" below.
+TICKTICK_SESSION_CACHE=/data/.ticktick-session.json
+
+# Optional: pin the device id instead of letting it be generated and persisted.
+TICKTICK_DEVICE_ID=<24 lowercase hex chars>
+```
+
+### Login rate limits (429) and device identity
+
+The unofficial API authenticates with username/password against TickTick's login
+endpoint, which is throttled aggressively. Two things keep that from breaking the
+`unofficial_*` tools:
+
+**Each install gets its own device id.** TickTick sees an `x-device` header
+carrying a device id. That id used to be a constant copied from ticktick-py, so
+every deployment running this code presented the *same device* to TickTick and
+shared a rate-limit bucket with every other copy. It is now generated once per
+install (24 hex chars, matching TickTick's format), persisted, and reused. Set
+`TICKTICK_DEVICE_ID` to pin it explicitly.
+
+**The session is cached, so restarts don't log in.** Login asks for
+`remember=true`, so the session is long-lived. Startup resumes the cached session
+and **never spends a login**; authentication happens on first use only when there
+is no valid session. This matters because a handful of redeploys during one
+debugging session used to be enough to earn a `429`, after which every
+`unofficial_*` tool failed while the official `ticktick_*` tools kept working
+(they use an OAuth bearer token and never touch a login endpoint).
+
+If you do get throttled, the client backs off (30s up to 15min, or whatever
+`Retry-After` asks for) and reconnects on its own - no redeploy needed. `/status`
+shows exactly where it is:
+
+```json
+"unofficial_api": {
+  "credentials_configured": true, "connected": false,
+  "session_source": null, "device_id": "87a81d490211bebab74ea907",
+  "last_error": "Login failed: 429 - ", "retry_in_seconds": 71
+}
 ```
 
 ### Getting Your Access Token

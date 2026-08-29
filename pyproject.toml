@@ -35,3 +35,7 @@ dev = [
 
 [tool.uv.sources]
 ticktick-py = { git = "https://github.com/jen6/ticktick-py.git", rev = "main" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
