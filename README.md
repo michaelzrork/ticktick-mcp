@@ -122,8 +122,9 @@ TICKTICK_USER_ID=your_user_id
 TICKTICK_USERNAME=your_ticktick_email
 TICKTICK_PASSWORD=your_ticktick_password
 
-# Required: Enable SSE transport for cloud
-MCP_TRANSPORT=sse
+# Required: Enable HTTP transport for cloud
+# ("sse" is still accepted and behaves identically - both serve /mcp and /sse)
+MCP_TRANSPORT=http
 ```
 
 ### Getting Your Access Token
@@ -137,10 +138,23 @@ MCP_TRANSPORT=sse
 
 ### Connect from MCP Clients
 
+In HTTP mode the server exposes both MCP transports:
+
+| Endpoint | Transport | Use it for |
+|----------|-----------|------------|
+| `/mcp` | Streamable HTTP | claude.ai connectors and every current client — **prefer this** |
+| `/sse` | Legacy HTTP+SSE | Older clients that only speak the deprecated SSE transport |
+
 **From claude.ai:**
 1. Go to Settings → Connectors
 2. Click "Add custom connector"
-3. Enter URL: `https://<your-deployment-url>/sse`
+3. Enter URL: `https://<your-deployment-url>/mcp`
+
+If you point a modern client at `/sse`, it POSTs its `initialize` request there and
+gets back `405 Method Not Allowed` — the SSE endpoint only accepts GET, with POSTs
+going to `/messages/`. Clients read that 405 as "this server wants authorization",
+go looking for OAuth metadata that an unauthenticated server doesn't publish, and
+report **"failed to start MCP authorization"**. Use `/mcp` and it connects directly.
 
 ## 🔧 Tools Reference
 

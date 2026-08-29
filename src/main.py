@@ -4,9 +4,20 @@ TickTick MCP Server - Main Entry Point
 
 Supports two transport modes:
 - stdio: For local MCP clients (default)
-- sse: For cloud deployment (Railway, etc.)
+- http:  For cloud deployment (Railway, etc.)
 
-Set MCP_TRANSPORT=sse environment variable to use SSE mode.
+Set MCP_TRANSPORT to "http" (or "sse", kept for backwards compatibility) to serve
+over HTTP. That mode exposes BOTH MCP transports from one app:
+
+- /mcp  Streamable HTTP. The current transport; this is what claude.ai custom
+        connectors and other modern clients speak. Point new clients here.
+- /sse  Legacy HTTP+SSE, with its companion /messages/ endpoint, for older
+        clients that only support it.
+
+A client pointed at /sse that speaks streamable HTTP POSTs its initialize request
+and gets 405 back, which reads to the client as "this needs authorization" - it
+then looks for OAuth metadata that an unauthenticated server does not publish and
+reports a failure to start authorization.
 """
 
 import logging
@@ -15,6 +26,7 @@ from urllib.parse import urlencode
 
 import httpx
 import uvicorn
+from starlette.applications import Starlette
 from starlette.responses import Response, RedirectResponse, JSONResponse
 
 # Import config (initializes environment variables)
@@ -127,19 +139,32 @@ def main():
     # Check transport mode
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
 
-    if transport == "sse":
-        # HTTP/SSE mode for cloud deployment
+    if transport in ("http", "streamable-http", "sse"):
+        # HTTP mode for cloud deployment
         port = int(os.environ.get("PORT", 8000))
 
-        # The SDK wires up /sse and /messages/; the routes registered with
-        # @mcp.custom_route above are mounted alongside them.
+        # Both SDK apps carry the @mcp.custom_route endpoints, so take the
+        # streamable-HTTP app as the base (it owns the session-manager lifespan)
+        # and add only the legacy SSE routes on top.
         #
-        # host="0.0.0.0" matters: sse_app() auto-enables DNS-rebinding protection
-        # when the host looks like localhost, which would reject requests carrying
-        # a public Host header once deployed.
-        app = mcp.sse_app(host="0.0.0.0")
+        # host="0.0.0.0" matters: these auto-enable DNS-rebinding protection when
+        # the host looks like localhost, which would reject requests carrying a
+        # public Host header once deployed.
+        http_app = mcp.streamable_http_app(host="0.0.0.0")
+        legacy_sse_routes = [
+            route
+            for route in mcp.sse_app(host="0.0.0.0").routes
+            if getattr(route, "path", None) in ("/sse", "/messages")
+        ]
+
+        app = Starlette(
+            routes=[*http_app.routes, *legacy_sse_routes],
+            lifespan=lambda scoped_app: http_app.router.lifespan_context(scoped_app),
+        )
 
         print(f"Starting TickTick MCP server on port {port}")
+        print(f"MCP endpoint (streamable HTTP): /mcp")
+        print(f"MCP endpoint (legacy SSE): /sse")
         print(f"Health check: /health")
         print(f"Status check: /status")
         print(f"OAuth start: /oauth/start")
