@@ -9,6 +9,8 @@ This eliminates the stale cache problem that plagued the ticktick-py approach.
 """
 
 import logging
+import threading
+import time
 from typing import Optional
 
 import httpx
@@ -48,37 +50,134 @@ class UnofficialAPIClient:
     }
     
     _instance: Optional["UnofficialAPIClient"] = None
-    _initialized: bool = False
-    
+    _lock = threading.RLock()
+
+    # A failed login must not be permanent. TickTick rate-limits /user/signon
+    # (429), so a restart during a busy window used to poison the process for its
+    # whole lifetime: the old code latched an "initialized" flag in a finally
+    # block and never retried, and every tool then reported "not configured".
+    RETRY_BASE_SECONDS = 30
+    RETRY_MAX_SECONDS = 900
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __init__(self):
-        """Initialize the client with authentication."""
-        if UnofficialAPIClient._initialized:
-            return
-        
-        self._client: Optional[httpx.Client] = None
-        self._access_token: Optional[str] = None
-        self._inbox_id: Optional[str] = None
-        self._time_zone: Optional[str] = None
-        self._profile_id: Optional[str] = None
-        
-        if not all([USERNAME, PASSWORD]):
-            logger.error("TickTick credentials not found. Set TICKTICK_USERNAME and TICKTICK_PASSWORD.")
-            UnofficialAPIClient._initialized = True
-            return
-        
-        try:
-            self._initialize_client()
-            logger.info("Unofficial API client initialized successfully (no-cache mode)")
-        except Exception as e:
-            logger.error(f"Error initializing unofficial client: {e}", exc_info=True)
-            self._client = None
-        finally:
-            UnofficialAPIClient._initialized = True
+        """Set up state and make a first connection attempt."""
+        with UnofficialAPIClient._lock:
+            if getattr(self, "_constructed", False):
+                return
+            self._constructed = True
+
+            self._client: Optional[httpx.Client] = None
+            self._access_token: Optional[str] = None
+            self._inbox_id: Optional[str] = None
+            self._time_zone: Optional[str] = None
+            self._profile_id: Optional[str] = None
+
+            self._last_error: Optional[str] = None
+            self._failed_attempts = 0
+            self._next_retry_at = 0.0
+
+        self.ensure_connected()
+
+    # ==================== Connection lifecycle ====================
+
+    @staticmethod
+    def credentials_configured() -> bool:
+        """Whether a username and password were supplied at all."""
+        return bool(USERNAME and PASSWORD)
+
+    def ensure_connected(self) -> bool:
+        """
+        Connect if not already connected, honouring the retry backoff.
+
+        Returns True when the client is usable. Safe to call on every request:
+        once connected it is just a None check, and while backing off it does not
+        touch the network.
+        """
+        with UnofficialAPIClient._lock:
+            if self._client is not None:
+                return True
+
+            if not self.credentials_configured():
+                self._last_error = (
+                    "TICKTICK_USERNAME and TICKTICK_PASSWORD are not set"
+                )
+                return False
+
+            if time.monotonic() < self._next_retry_at:
+                return False
+
+            try:
+                self._initialize_client()
+            except Exception as e:
+                self._client = None
+                self._failed_attempts += 1
+                delay = min(
+                    self.RETRY_BASE_SECONDS * (2 ** (self._failed_attempts - 1)),
+                    self.RETRY_MAX_SECONDS,
+                )
+                self._next_retry_at = time.monotonic() + delay
+                self._last_error = str(e)
+                logger.error(
+                    f"Unofficial API login failed (attempt {self._failed_attempts}): "
+                    f"{e}. Retrying in {delay}s."
+                )
+                return False
+
+            self._failed_attempts = 0
+            self._next_retry_at = 0.0
+            self._last_error = None
+            logger.info("Unofficial API client connected (no-cache mode)")
+            return True
+
+    def reconnect(self) -> bool:
+        """Drop the current session and log in again (used when it expires)."""
+        with UnofficialAPIClient._lock:
+            if self._client is not None:
+                self._client.close()
+                self._client = None
+            self._access_token = None
+            # An explicit reconnect should not be blocked by an earlier backoff.
+            self._next_retry_at = 0.0
+        return self.ensure_connected()
+
+    def status(self) -> dict:
+        """A description of why the unofficial API is or isn't usable."""
+        with UnofficialAPIClient._lock:
+            connected = self._client is not None
+            retry_in = 0.0
+            if not connected and self._next_retry_at:
+                retry_in = max(0.0, self._next_retry_at - time.monotonic())
+            return {
+                "credentials_configured": self.credentials_configured(),
+                "connected": connected,
+                "last_error": self._last_error,
+                "failed_attempts": self._failed_attempts,
+                "retry_in_seconds": round(retry_in),
+            }
+
+    def unavailable_reason(self) -> str:
+        """A message that says what actually went wrong, not a guess."""
+        state = self.status()
+        if not state["credentials_configured"]:
+            return (
+                "Unofficial API not configured: TICKTICK_USERNAME and "
+                "TICKTICK_PASSWORD are not set."
+            )
+        message = f"Unofficial API unavailable: {state['last_error']}"
+        if "429" in (state["last_error"] or ""):
+            message += (
+                " (TickTick is rate-limiting the login endpoint; this usually clears"
+                " on its own)"
+            )
+        if state["retry_in_seconds"]:
+            message += f". Retrying in {state['retry_in_seconds']}s."
+        return message
+
     
     def _initialize_client(self):
         """
@@ -175,13 +274,14 @@ class UnofficialAPIClient:
     
     @classmethod
     def get_instance(cls) -> Optional["UnofficialAPIClient"]:
-        """Get the singleton instance."""
-        if not cls._initialized:
-            cls()
-        instance = cls._instance
-        if instance and instance._client:
-            return instance
-        return None
+        """The singleton, or None when it cannot currently reach TickTick."""
+        instance = cls._instance or cls()
+        return instance if instance.ensure_connected() else None
+
+    @classmethod
+    def peek(cls) -> Optional["UnofficialAPIClient"]:
+        """The singleton without triggering a connection attempt (for status)."""
+        return cls._instance
     
     @property
     def client(self) -> httpx.Client:
@@ -218,26 +318,69 @@ class UnofficialAPIClient:
         """
         url = f"https://api.ticktick.com{endpoint}"
 
-        if method == "GET":
-            response = self.client.get(url, params=params)
-        elif method == "POST":
-            response = self.client.post(url, json=data)
-        elif method == "PUT":
-            response = self.client.put(url, json=data)
-        elif method == "DELETE":
-            response = self.client.delete(url)
-        else:
-            raise ValueError(f"Unsupported method: {method}")
+        response = self._send(method, url, data, params)
+
+        # The session token from /user/signon expires. Without this the whole
+        # deployment stays broken until someone redeploys it.
+        if response.status_code == 401:
+            logger.info("Unofficial API session rejected (401); re-authenticating")
+            if self.reconnect():
+                response = self._send(method, url, data, params)
 
         if response.status_code != 200:
             raise RuntimeError(f"API error {response.status_code}: {response.text[:200]}")
 
         return response.json() if response.content else {"status": "success"}
 
+    def _send(
+        self,
+        method: str,
+        url: str,
+        data: dict | list | None,
+        params: dict | None,
+    ) -> httpx.Response:
+        """Issue one HTTP request with the authenticated client."""
+        if method == "GET":
+            return self.client.get(url, params=params)
+        elif method == "POST":
+            return self.client.post(url, json=data)
+        elif method == "PUT":
+            return self.client.put(url, json=data)
+        elif method == "DELETE":
+            return self.client.delete(url)
+        raise ValueError(f"Unsupported method: {method}")
+
 
 
 # ==================== Module-level convenience functions ====================
 
 def get_client() -> Optional[UnofficialAPIClient]:
-    """Get the unofficial API client instance."""
+    """Get the unofficial API client instance, or None if it can't connect."""
     return UnofficialAPIClient.get_instance()
+
+
+def client_status() -> dict:
+    """
+    Report the unofficial client's state without forcing a connection attempt.
+
+    Used by the /status endpoint so a failing login can be diagnosed from a
+    browser instead of by reading deploy logs.
+    """
+    instance = UnofficialAPIClient.peek()
+    if instance is None:
+        return {
+            "credentials_configured": UnofficialAPIClient.credentials_configured(),
+            "connected": False,
+            "last_error": "client not constructed yet",
+            "failed_attempts": 0,
+            "retry_in_seconds": 0,
+        }
+    return instance.status()
+
+
+def unavailable_reason() -> str:
+    """Why the unofficial API isn't usable right now."""
+    instance = UnofficialAPIClient.peek()
+    if instance is None:
+        return "Unofficial API client has not been constructed."
+    return instance.unavailable_reason()

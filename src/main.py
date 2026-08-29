@@ -34,6 +34,7 @@ from ticktick_mcp import config
 
 # Import the MCP instance
 from ticktick_mcp.mcp_instance import mcp
+from ticktick_mcp.unofficial_client import client_status as unofficial_client_status
 
 # Import and register tools
 # These imports cause the @mcp.tool() decorators to register the tools
@@ -43,13 +44,16 @@ from ticktick_mcp.tools import task_tools  # noqa: F401
 from ticktick_mcp.tools import unofficial_tools  # noqa: F401
 logging.info("Tool registration complete.")
 
-# Eager init - login to unofficial API at startup, not on first tool call
+# Eager init - try to log in to the unofficial API at startup rather than on the
+# first tool call. A failure here is not fatal and not permanent: the client
+# retries with backoff on next use, so a rate-limited (429) login at boot no
+# longer takes the unofficial tools down for the life of the process.
 from ticktick_mcp.unofficial_client import UnofficialAPIClient
-try:
-    UnofficialAPIClient()
-    logging.info("Unofficial API client initialized successfully.")
-except Exception as e:
-    logging.error(f"Failed to initialize unofficial API client: {e}")
+_unofficial = UnofficialAPIClient()
+if _unofficial.ensure_connected():
+    logging.info("Unofficial API client connected.")
+else:
+    logging.warning(f"Unofficial API not connected at startup: {_unofficial.unavailable_reason()}")
 
 
 # --- OAuth Routes (for cloud deployment) --- #
@@ -61,13 +65,16 @@ async def health_check(request):
 
 @mcp.custom_route("/status", methods=["GET"])
 async def status_check(request):
-    """Return server status including auth state."""
+    """Return server status including auth state for both APIs."""
     client = config.get_ticktick_client()
     return JSONResponse({
         "status": "running",
         "authenticated": client is not None,
         "user_id_configured": config.USER_ID is not None,
-        "inbox_available": client.inbox_id if client else None
+        "inbox_available": client.inbox_id if client else None,
+        # The official and unofficial clients fail independently, so report them
+        # separately - the tools that break are usually only the unofficial ones.
+        "unofficial_api": unofficial_client_status(),
     })
 
 

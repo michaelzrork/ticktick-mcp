@@ -34,7 +34,11 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from ticktick_mcp.mcp_instance import mcp
-from ticktick_mcp.unofficial_client import UnofficialAPIClient, get_client
+from ticktick_mcp.unofficial_client import (
+    UnofficialAPIClient,
+    get_client,
+    unavailable_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +59,16 @@ TASK_BY_ID = "/api/v2/task/{task_id}"
 
 
 def _get_api_client() -> UnofficialAPIClient:
-    """Get the unofficial API client or raise an error."""
+    """
+    Get the unofficial API client or raise, saying what is actually wrong.
+
+    Missing credentials and a login TickTick refused are different problems; this
+    used to report both as "not configured", which sent debugging after
+    environment variables that were fine all along.
+    """
     client = get_client()
     if not client:
-        raise RuntimeError("Unofficial API not configured. Check TICKTICK_USERNAME and TICKTICK_PASSWORD.")
+        raise RuntimeError(unavailable_reason())
     return client
 
 
