@@ -132,6 +132,9 @@ TICKTICK_SESSION_CACHE=/data/.ticktick-session.json
 
 # Optional: pin the device id instead of letting it be generated and persisted.
 TICKTICK_DEVICE_ID=<24 lowercase hex chars>
+
+# Optional: authenticate on first tool use instead of at startup.
+TICKTICK_DEFER_LOGIN=1
 ```
 
 ### Login rate limits (429) and device identity
@@ -147,13 +150,20 @@ shared a rate-limit bucket with every other copy. It is now generated once per
 install (24 hex chars, matching TickTick's format), persisted, and reused. Set
 `TICKTICK_DEVICE_ID` to pin it explicitly.
 
-**The session is cached, so restarts don't log in.** Login asks for
-`remember=true`, so the session is long-lived. Startup resumes the cached session
-and **never spends a login**; authentication happens on first use only when there
-is no valid session. This matters because a handful of redeploys during one
-debugging session used to be enough to earn a `429`, after which every
-`unofficial_*` tool failed while the official `ticktick_*` tools kept working
-(they use an OAuth bearer token and never touch a login endpoint).
+**The session is cached, so restarts rarely log in.** Login asks for
+`remember=true`, so the session is long-lived. The server authenticates at
+startup, but resumes the cached session when one exists and only logs in when
+there isn't one - so a normal deploy costs no login. This matters because a
+handful of redeploys during one debugging session used to be enough to earn a
+`429`, after which every `unofficial_*` tool failed while the official
+`ticktick_*` tools kept working (they use an OAuth bearer token and never touch a
+login endpoint).
+
+Startup connecting eagerly means a deploy either works or says why in its own
+logs, instead of the first tool call being the one to find out. It is never
+fatal - a failure is retried with backoff and the official tools are unaffected.
+Set `TICKTICK_DEFER_LOGIN=1` to authenticate on first use instead, which is worth
+doing while the login endpoint is actively rate-limiting you.
 
 If you do get throttled, the client backs off (30s up to 15min, or whatever
 `Retry-After` asks for) and reconnects on its own - no redeploy needed. `/status`

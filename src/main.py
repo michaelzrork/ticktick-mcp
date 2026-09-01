@@ -35,22 +35,37 @@ from ticktick_mcp.tools import task_tools  # noqa: F401
 from ticktick_mcp.tools import unofficial_tools  # noqa: F401
 logging.info("Tool registration complete.")
 
-# Prepare the unofficial API client. This resumes a cached session if there is
-# one, but never spends a fresh login at startup: TickTick rate-limits its login
-# endpoint, so booting must not cost a login on its own. The first unofficial_*
-# tool call authenticates if needed.
+# Connect the unofficial API at startup, so a deploy either works or says why,
+# rather than the first tool call being the one to find out.
+#
+# This resumes the cached session when there is one and only logs in when there
+# is not, so a normal deploy costs no login. Failure here is never fatal: the
+# client retries with backoff, and the server still serves the official tools.
+#
+# Set TICKTICK_DEFER_LOGIN=1 to go back to authenticating on first use, which is
+# worth doing while the login endpoint is rate-limiting you.
 from ticktick_mcp.unofficial_client import UnofficialAPIClient
 _unofficial = UnofficialAPIClient()
 logging.info(f"Unofficial API device id: {_unofficial.device_id}")
-if _unofficial.ensure_connected(allow_login=False):
-    logging.info("Unofficial API: resumed cached session, no login needed.")
-elif _unofficial.credentials_configured():
-    logging.info("Unofficial API: no cached session; will authenticate on first use.")
-else:
+
+_defer_login = os.environ.get("TICKTICK_DEFER_LOGIN", "").lower() in ("1", "true", "yes")
+
+if not _unofficial.credentials_configured():
     logging.warning(
         "Unofficial API: TICKTICK_USERNAME / TICKTICK_PASSWORD not set; "
         "unofficial_* tools are unavailable."
     )
+elif _unofficial.ensure_connected(allow_login=not _defer_login):
+    logging.info(
+        f"Unofficial API connected at startup "
+        f"(session: {_unofficial.status()['session_source']})."
+    )
+elif _defer_login:
+    logging.info(
+        "Unofficial API: TICKTICK_DEFER_LOGIN set; will authenticate on first use."
+    )
+else:
+    logging.error(f"Unofficial API not connected: {_unofficial.unavailable_reason()}")
 
 
 # --- OAuth Routes (for cloud deployment) --- #

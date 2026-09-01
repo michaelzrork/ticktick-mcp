@@ -14,8 +14,9 @@ down with it:
   every deployment running this code presented the same device to TickTick and
   shared one rate-limit bucket. It is now generated once per install and kept.
 - A cached SESSION TOKEN. Login asks for `remember=true`, so the session is
-  long-lived; a restart reuses it instead of logging in again. Logging in on
-  every boot is what earns the 429 in the first place.
+  long-lived. Startup connects eagerly, but resumes that session when it exists
+  and only logs in when it does not - so a normal deploy costs no login, which
+  is what stops a burst of redeploys earning a 429.
 """
 
 import email.utils
