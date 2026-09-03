@@ -135,7 +135,31 @@ TICKTICK_DEVICE_ID=<24 lowercase hex chars>
 
 # Optional: authenticate on first tool use instead of at startup.
 TICKTICK_DEFER_LOGIN=1
+
+# Optional: use a session token directly and skip the login endpoint entirely.
+TICKTICK_SESSION_TOKEN=<the "t" cookie from a signed-in ticktick.com session>
 ```
+
+### Using a session token instead of a password
+
+The v2 API only ever wants a session cookie; the username/password login is just
+one way to obtain one. When that endpoint refuses to issue a token - it is
+throttled, or it answers `username_password_not_match` for every request
+including ones for accounts that do not exist - you can supply a token directly
+and skip it:
+
+1. Sign in to `https://ticktick.com` in your own browser.
+2. DevTools → Application → Cookies → `https://ticktick.com` → copy the value of
+   the cookie named **`t`**.
+3. Set it as `TICKTICK_SESSION_TOKEN` on your deployment.
+
+The token takes precedence over the cached session, and no login call is made
+while it works. If it expires or was copied incompletely, the server logs that
+clearly and falls back to a normal login. `/status` reports
+`session_source: "env"` when the supplied token is in use, and never contains the
+token itself.
+
+Treat the token like a password: it grants full account access until it expires.
 
 ### Login rate limits (429) and device identity
 

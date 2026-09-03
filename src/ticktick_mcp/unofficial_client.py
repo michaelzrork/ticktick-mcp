@@ -268,6 +268,7 @@ class UnofficialAPIClient:
             self._failed_attempts = 0
             self._next_retry_at = 0.0
             self._logged_in_this_process = False
+            self._session_source: Optional[str] = None
             self._credentials_rejected = False
             self._last_login_diagnostics: Optional[dict] = None
 
@@ -445,10 +446,9 @@ class UnofficialAPIClient:
                 "credentials_configured": self.credentials_configured(),
                 "credentials_rejected": self._credentials_rejected,
                 "connected": connected,
-                "session_source": (
-                    "cached" if connected and not self._logged_in_this_process
-                    else "login" if connected
-                    else None
+                "session_source": self._session_source if connected else None,
+                "supplied_token_configured": bool(
+                    os.getenv("TICKTICK_SESSION_TOKEN")
                 ),
                 "device_id": self._device_id,
                 "device_id_persisted": self._device_id_persisted,
@@ -532,17 +532,38 @@ class UnofficialAPIClient:
             client.close()
             raise
 
+    def _session_token_candidates(self) -> list[tuple[str, str]]:
+        """
+        Session tokens to try before falling back to a password login.
+
+        TICKTICK_SESSION_TOKEN comes first: the v2 API only ever wanted a session
+        cookie, and a token lifted from a signed-in browser is exactly that. It
+        makes the login endpoint irrelevant, which matters when that endpoint is
+        refusing to issue one.
+        """
+        candidates = []
+        supplied = os.getenv("TICKTICK_SESSION_TOKEN")
+        if supplied:
+            candidates.append(("env", supplied.strip()))
+        cached = _read_state().get("session_token")
+        if cached and cached != (supplied or "").strip():
+            candidates.append(("cached", cached))
+        return candidates
+
     def _resume_cached_session(self) -> bool:
         """
-        Try the cached session token. True when it is still valid.
+        Try each known session token. True when one is still valid.
 
         The validation request doubles as the settings load, so resuming costs
         one request and no login.
         """
-        token = _read_state().get("session_token")
-        if not token:
-            return False
+        for source, token in self._session_token_candidates():
+            if self._try_session_token(source, token):
+                return True
+        return False
 
+    def _try_session_token(self, source: str, token: str) -> bool:
+        """Validate one session token. Never logs the token itself."""
         self._client.cookies.set("t", token)
         try:
             response = self._client.get(
@@ -558,15 +579,28 @@ class UnofficialAPIClient:
             self._access_token = token
             self._active_device_id = self._device_id
             self._logged_in_this_process = False
+            self._session_source = source
             self._apply_settings(response.json())
-            logger.info("Reused cached TickTick session (no login needed)")
+            logger.info(
+                f"Using the {source} TickTick session token - no login needed"
+            )
             return True
 
-        logger.info(
-            f"Cached session rejected ({response.status_code}); a login is needed"
-        )
+        if source == "env":
+            # Worth saying loudly: someone deliberately supplied this token and
+            # it did not work, which is different from a stale cache.
+            logger.error(
+                f"The session token in TICKTICK_SESSION_TOKEN was rejected "
+                f"({response.status_code}). It has probably expired or was "
+                "copied incompletely - grab a fresh one."
+            )
+        else:
+            logger.info(
+                f"Cached session rejected ({response.status_code}); "
+                "a login is needed"
+            )
+            self._forget_session()
         self._client.cookies.clear()
-        self._forget_session()
         return False
 
     def _login(self):
@@ -645,6 +679,7 @@ class UnofficialAPIClient:
         self._client.cookies.set("t", self._access_token)
         self._active_device_id = device_id
         self._logged_in_this_process = True
+        self._session_source = "login"
         logger.info(
             f"Login successful using the {label} device id ({device_id})"
         )
