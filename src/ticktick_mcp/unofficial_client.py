@@ -98,6 +98,49 @@ def _login_error_code(body: str) -> str:
         return body[:120]
 
 
+# The device id every copy of this code used to send, copied from ticktick-py.
+# Kept only as the FIRST rung of the login ladder: it is the identity this
+# account logged in with for months, so it is worth trying before the
+# per-install one. Never used as a default.
+LEGACY_SHARED_DEVICE_ID = "674c46cf88bb9f5f73c3068a"
+
+
+def credentials_shape() -> dict:
+    """
+    Describe the credentials WITHOUT revealing them.
+
+    "The password is correct" and "the password arrives at the login call
+    intact" are different claims. A trailing newline or a stray quote picked up
+    from a config UI produces an authentication failure for a password that was
+    never changed, and nothing else would show it.
+
+    Lengths and whitespace flags only - never the values, and never on the
+    public /status endpoint.
+    """
+    def describe(value: Optional[str]) -> dict:
+        if value is None:
+            return {"set": False}
+        return {
+            "set": True,
+            "length": len(value),
+            "leading_whitespace": value != value.lstrip(),
+            "trailing_whitespace": value != value.rstrip(),
+            "contains_newline": "\n" in value or "\r" in value,
+            "surrounded_by_quotes": len(value) > 1
+            and value[0] == value[-1]
+            and value[0] in "\"'",
+        }
+
+    return {"username": describe(USERNAME), "password": describe(PASSWORD)}
+
+
+def _redact(text: str) -> str:
+    """Strip the account's own username out of text bound for a public endpoint."""
+    if USERNAME and text:
+        return text.replace(USERNAME, "<username>")
+    return text
+
+
 def _new_device_id() -> str:
     """
     Generate a device id in the shape TickTick uses (24 lowercase hex chars).
@@ -229,6 +272,8 @@ class UnofficialAPIClient:
             self._last_login_diagnostics: Optional[dict] = None
 
             self._device_id, self._device_id_persisted = self._resolve_device_id()
+            # Which identity the current session was actually established with.
+            self._active_device_id: Optional[str] = None
 
     # ==================== Device identity ====================
 
@@ -264,8 +309,22 @@ class UnofficialAPIClient:
             )
         return device_id, persisted
 
-    def _device_header(self) -> str:
-        """The x-device header value, carrying this install's device id."""
+    def _login_device_candidates(self) -> list[tuple[str, str]]:
+        """
+        Device identities to try at login, in order, as (label, device_id).
+
+        The legacy shared id goes first: it is what this account authenticated
+        with for months. It is also the id most likely to be rate-limited, since
+        every other copy of this code sends it - so a 429 falls through to this
+        install's own id, which nobody else is using.
+        """
+        candidates = [("legacy-shared", LEGACY_SHARED_DEVICE_ID)]
+        if self._device_id != LEGACY_SHARED_DEVICE_ID:
+            candidates.append(("per-install", self._device_id))
+        return candidates
+
+    def _device_header(self, device_id: Optional[str] = None) -> str:
+        """The x-device header value, carrying a device id."""
         return json.dumps(
             {
                 "platform": "web",
@@ -273,7 +332,7 @@ class UnofficialAPIClient:
                 "device": "Chrome 135.0.0.0",
                 "name": "",
                 "version": 6260,
-                "id": self._device_id,
+                "id": device_id or self._device_id,
                 "channel": "website",
                 "campaign": "",
                 "websocket": "",
@@ -393,6 +452,7 @@ class UnofficialAPIClient:
                 ),
                 "device_id": self._device_id,
                 "device_id_persisted": self._device_id_persisted,
+                "active_device_id": self._active_device_id,
                 "state_file": str(state_path()),
                 "last_error": self._last_error,
                 "failed_attempts": self._failed_attempts,
@@ -496,6 +556,7 @@ class UnofficialAPIClient:
 
         if response.status_code == 200:
             self._access_token = token
+            self._active_device_id = self._device_id
             self._logged_in_this_process = False
             self._apply_settings(response.json())
             logger.info("Reused cached TickTick session (no login needed)")
@@ -509,51 +570,91 @@ class UnofficialAPIClient:
         return False
 
     def _login(self):
-        """Authenticate with username/password to get a session token."""
+        """
+        Authenticate, trying each device identity in turn.
+
+        The legacy shared id is tried first because it is what this account used
+        for months. Only a 429 falls through to the next candidate - that is the
+        one failure a different device identity can actually fix, since the
+        legacy id shares a rate-limit bucket with every other copy of this code.
+        Any other outcome (success, or a rejection) is about the account, not the
+        device, so it stops the ladder immediately.
+        """
         url = self.BASE_URL + "user/signon"
         params = {"wc": True, "remember": True}
-        payload = {
-            "username": USERNAME,
-            "password": PASSWORD,
-        }
+        payload = {"username": USERNAME, "password": PASSWORD}
 
         # The username is an email address; keep it out of INFO-level deploy logs.
         logger.debug(f"Logging in as {USERNAME}")
-        logger.info("Authenticating with TickTick (username/password)")
-        response = self._client.post(url, json=payload, params=params)
 
-        if response.status_code != 200:
-            self._record_login_failure(response)
+        candidates = self._login_device_candidates()
+        last_rate_limit: Optional[LoginRateLimited] = None
 
-        if response.status_code == 429:
-            retry_after = _parse_retry_after(response.headers.get("Retry-After"))
-            raise LoginRateLimited(
-                f"Login failed: 429 - {response.text[:200]}", retry_after
+        for label, device_id in candidates:
+            logger.info(
+                f"Authenticating with TickTick using the {label} device id "
+                f"({device_id})"
+            )
+            response = self._client.post(
+                url,
+                json=payload,
+                params=params,
+                headers={"x-device": self._device_header(device_id)},
             )
 
-        if response.status_code != 200:
+            if response.status_code == 200:
+                self._finish_login(response, label, device_id)
+                return
+
+            self._record_login_failure(response, label, device_id)
+
+            if response.status_code == 429:
+                retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+                last_rate_limit = LoginRateLimited(
+                    f"Login failed: 429 with the {label} device id", retry_after
+                )
+                logger.info(
+                    f"The {label} device id is rate-limited; trying the next one"
+                )
+                continue
+
             body = response.text[:500]
             if any(code in body for code in TERMINAL_LOGIN_ERROR_CODES):
                 raise LoginRejected(
                     f"TickTick returned {_login_error_code(body)} "
-                    f"(HTTP {response.status_code})"
+                    f"(HTTP {response.status_code}) with the {label} device id"
                 )
             raise RuntimeError(
-                f"Login failed: {response.status_code} - {body[:200]}"
+                f"Login failed: {response.status_code} - {_redact(body[:200])}"
             )
 
+        # Every candidate was rate-limited.
+        raise last_rate_limit
+
+    def _finish_login(self, response: httpx.Response, label: str, device_id: str):
+        """Store the session from a successful login response."""
         data = response.json()
         self._access_token = data.get("token")
 
         if not self._access_token:
             raise RuntimeError("Login response missing token")
 
-        # Set the cookie for subsequent requests
+        # Keep using the identity that actually worked for the rest of the
+        # session, so the session and the device stay consistent.
+        self._client.headers["x-device"] = self._device_header(device_id)
         self._client.cookies.set("t", self._access_token)
+        self._active_device_id = device_id
         self._logged_in_this_process = True
-        logger.info("Login successful, session token obtained")
+        logger.info(
+            f"Login successful using the {label} device id ({device_id})"
+        )
 
-    def _record_login_failure(self, response: httpx.Response) -> None:
+    def _record_login_failure(
+        self,
+        response: httpx.Response,
+        device_label: str = "unknown",
+        device_id: Optional[str] = None,
+    ) -> None:
         """
         Keep everything the failed login told us.
 
@@ -567,16 +668,20 @@ class UnofficialAPIClient:
             for key, value in response.headers.items()
             if key.lower() != "set-cookie"
         }
+        # /status is unauthenticated, so the account's own email must not ride
+        # along in the error body TickTick echoes back.
         self._last_login_diagnostics = {
             "status": response.status_code,
             "error_code": _login_error_code(response.text[:500]),
-            "body": response.text[:500],
+            "body": _redact(response.text[:500]),
             "headers": headers,
-            "device_id": self._device_id,
+            "device_label": device_label,
+            "device_id": device_id or self._device_id,
         }
         logger.error(
-            f"Login failed: HTTP {response.status_code}; "
-            f"body={response.text[:300]}; headers={headers}"
+            f"Login failed with the {device_label} device id: "
+            f"HTTP {response.status_code}; body={response.text[:300]}; "
+            f"headers={headers}"
         )
 
     def _remember_session(self) -> None:

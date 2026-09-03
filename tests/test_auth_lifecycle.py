@@ -164,13 +164,15 @@ def test_rate_limited_login_is_retried_not_latched(transport):
     client = UnofficialAPIClient()
 
     assert client.ensure_connected() is False
-    assert t.logins == 1
+    # A 429 walks the whole device ladder before giving up on the attempt.
+    attempts_per_try = t.logins
+    assert attempts_per_try >= 1
 
     # Once the backoff passes, the next use tries again on its own.
     client._next_retry_at = 0.0
     t.login_status = 200
     assert client.ensure_connected() is True
-    assert t.logins == 2
+    assert t.logins > attempts_per_try
 
 
 def test_failure_reason_names_the_rate_limit(transport):
@@ -197,9 +199,15 @@ def test_missing_credentials_still_says_not_configured(monkeypatch, transport):
 def test_no_retry_storm_while_backing_off(transport):
     t = transport(login_status=429)
     client = UnofficialAPIClient()
+    client.ensure_connected()
+    after_one_attempt = t.logins
+
     for _ in range(6):
         client.ensure_connected()
-    assert t.logins == 1, "backoff must not hammer a rate-limited endpoint"
+
+    assert t.logins == after_one_attempt, (
+        "backoff must not hammer a rate-limited endpoint"
+    )
 
 
 def test_backoff_grows_and_is_capped(transport):
@@ -391,7 +399,9 @@ def test_login_failure_captures_headers_and_body(rejecting):
     assert diag["error_code"] == "username_password_not_match"
     assert "errorId" in diag["body"]
     assert isinstance(diag["headers"], dict)
-    assert diag["device_id"] == client.device_id
+    # The rejection happens on the first rung, so that is the id recorded.
+    assert diag["device_id"] == uc.LEGACY_SHARED_DEVICE_ID
+    assert diag["device_label"] == "legacy-shared"
 
 
 def test_diagnostics_never_leak_a_session_cookie(rejecting):

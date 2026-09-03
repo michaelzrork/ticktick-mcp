@@ -44,9 +44,15 @@ logging.info("Tool registration complete.")
 #
 # Set TICKTICK_DEFER_LOGIN=1 to go back to authenticating on first use, which is
 # worth doing while the login endpoint is rate-limiting you.
-from ticktick_mcp.unofficial_client import UnofficialAPIClient
+from ticktick_mcp.unofficial_client import UnofficialAPIClient, credentials_shape
 _unofficial = UnofficialAPIClient()
 logging.info(f"Unofficial API device id: {_unofficial.device_id}")
+
+# Lengths and whitespace flags only, never the values, and only in the deploy
+# log - /status is unauthenticated. This distinguishes "the password is wrong"
+# from "the password is being mangled before it reaches the login call", which
+# a trailing newline or a stray quote in a config UI would cause.
+logging.info(f"Unofficial API credential shape: {credentials_shape()}")
 
 _defer_login = os.environ.get("TICKTICK_DEFER_LOGIN", "").lower() in ("1", "true", "yes")
 

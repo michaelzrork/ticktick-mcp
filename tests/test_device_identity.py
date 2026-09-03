@@ -42,12 +42,18 @@ def test_device_id_is_not_the_shared_constant(isolated_state):
     assert client.device_id != SHARED_ID_FROM_TICKTICK_PY
 
 
-def test_shared_constant_is_gone_from_the_source():
-    """Guard against anyone reintroducing the hardcoded id."""
-    from pathlib import Path
+def test_shared_constant_is_never_this_install_s_identity():
+    """
+    The legacy id still exists as the first rung of the login ladder, but it
+    must never become the identity this install generates or falls back to.
+    """
+    assert uc.LEGACY_SHARED_DEVICE_ID == SHARED_ID_FROM_TICKTICK_PY
 
-    source = Path(uc.__file__).read_text()
-    assert SHARED_ID_FROM_TICKTICK_PY not in source
+    for _ in range(20):
+        assert uc._new_device_id() != SHARED_ID_FROM_TICKTICK_PY
+
+    client = UnofficialAPIClient()
+    assert client.device_id != SHARED_ID_FROM_TICKTICK_PY
 
 
 def test_two_installs_get_different_device_ids(tmp_path, monkeypatch):
