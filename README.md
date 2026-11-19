@@ -212,17 +212,25 @@ In every app, adding it opens TickTick's sign-in in your browser. Sign in with
 let in.
 
 **Claude (claude.ai, the desktop app, and the mobile apps)**
-1. Settings → **Connectors** → **Add custom connector**.
-2. Name it (for example, TickTick), paste the connector URL, and click **Add**.
-3. Click **Connect** and sign in to TickTick. Connectors added on the web show
-   up in the desktop and mobile apps too.
+1. Open **Settings → Connectors**.
+2. Tap **+ Add**, then **Add Custom Connector**.
+3. Name it (for example, **TickTick**) and paste the connector URL.
+4. Tap **Continue**. Claude checks the server and fills in the next screen:
+   **Sign in now** and **Use Claude's published identity** are already selected
+   and marked Detected. Leave them as they are and tap **Add**.
+5. Sign in to TickTick and choose **Allow**. Connectors added on the web show up
+   in the desktop and mobile apps too.
 
-**ChatGPT** (custom connectors need a plan that allows them, and Developer mode)
-1. Settings → **Apps & Connectors** → **Advanced settings** → turn on
-   **Developer mode**.
-2. Back in **Apps & Connectors**, click **Create**, paste the connector URL,
-   choose **OAuth** for authentication, and save.
-3. Sign in to TickTick when it asks.
+**ChatGPT** (on the ChatGPT **website**; adding a custom server isn't available
+in the ChatGPT app)
+1. Open **Plugins**, choose **Add**, then **Add Custom MCP Server**.
+2. Name it (for example, **TickTick**). For an icon, download
+   `https://<your server's address>/icon.png` and add it under **Icon
+   (optional)**.
+3. Under Connection, leave **Server URL** selected and paste the connector URL.
+4. Leave Authentication on **OAuth**. ChatGPT finds the rest on its own.
+5. Tick **I understand and want to continue**, then **Create as a Plugin**.
+6. Choose **Connect**, sign in to TickTick, and choose **Allow**.
 
 **Claude Code**
 
