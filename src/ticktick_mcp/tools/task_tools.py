@@ -18,6 +18,7 @@ CHECKLIST ITEMS vs SUBTASKS:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -45,6 +46,12 @@ def _format_date_for_ticktick(date_str: str | None, time_zone: str | None = None
     """
     if not date_str:
         return None
+
+    # No zone given means the owner's zone, never UTC: without this a bare
+    # "08:00" went out as 08:00+0000 and showed hours early (2026-11-19), the
+    # same mistake the unofficial tools had. TICKTICK_TIME_ZONE overrides.
+    if not time_zone:
+        time_zone = os.environ.get("TICKTICK_TIME_ZONE") or "America/New_York"
 
     # If already has timezone offset (contains + or - near end), return as-is with .000 if needed
     if len(date_str) > 10 and ('+' in date_str[-6:] or '-' in date_str[-6:]):

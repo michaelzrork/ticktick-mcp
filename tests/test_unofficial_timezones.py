@@ -82,3 +82,18 @@ def test_all_day_create_unchanged(monkeypatch):
                                    start_date="2026-11-19", due_date="2026-11-19", time_zone=NY)
     t = _sent_task(fake)
     assert t["startDate"] == t["dueDate"] == "2026-11-19"
+
+
+def test_official_formatter_defaults_to_owner_zone(monkeypatch):
+    """A bare time with no time_zone is the owner's local time, not UTC."""
+    from ticktick_mcp.tools import task_tools
+    monkeypatch.delenv("TICKTICK_TIME_ZONE", raising=False)
+    assert task_tools._format_date_for_ticktick("2026-11-19T08:00:00") == "2026-11-19T08:00:00.000-0500"
+    assert task_tools._format_date_for_ticktick("2026-07-19T08:00:00") == "2026-07-19T08:00:00.000-0400"
+    monkeypatch.setenv("TICKTICK_TIME_ZONE", "America/Los_Angeles")
+    assert task_tools._format_date_for_ticktick("2026-11-19T08:00:00") == "2026-11-19T08:00:00.000-0800"
+
+
+def test_instructions_spell_out_time_rules():
+    from ticktick_mcp.mcp_instance import INSTRUCTIONS
+    assert "NEVER convert" in INSTRUCTIONS and "+0000" in INSTRUCTIONS

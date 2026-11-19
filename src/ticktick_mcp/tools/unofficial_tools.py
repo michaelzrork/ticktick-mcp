@@ -614,6 +614,8 @@ def unofficial_create_task(
         time_zone="America/New_York"
 
     ALWAYS:
+        - Times are LOCAL wall-clock time in time_zone ("T08:00:00" = 8:00 AM there).
+          The server converts to UTC. NEVER convert to UTC yourself.
         - Set BOTH start_date AND due_date to the same value
         - Include time_zone with every date (defaults to America/New_York)
         - Omitting one date can create unintended date ranges
@@ -798,6 +800,8 @@ def unofficial_update_task(
         time_zone="America/New_York"
 
     ALWAYS:
+        - Times are LOCAL wall-clock time in time_zone ("T08:00:00" = 8:00 AM there).
+          The server converts to UTC. NEVER convert to UTC yourself.
         - Set BOTH start_date AND due_date even if only one is changing
         - Include time_zone with every date update (defaults to America/New_York)
         - Omitting start_date leaves old value, creating unintended date ranges
