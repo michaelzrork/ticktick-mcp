@@ -20,6 +20,18 @@ This server provides comprehensive access to TickTick functionalities via MCP to
   * Set `repeatFrom` (repeat from due date vs completion date)
   * View task and project activity logs
 
+> **Only the unofficial tools can pin, unpin, or read a task's history.** TickTick's
+> official API has neither. Checked against the live API on 2026-11-19:
+> - **Pinning:** the official task object has no pin field. A task pinned through
+>   the unofficial API comes back from the official `GET
+>   /project/{projectId}/task/{taskId}` with no sign that it's pinned.
+> - **History:** the official API has no activity endpoint. `GET /task/{id}/activity`
+>   and `/task/{id}/activities` both return 404, while the unofficial
+>   `unofficial_get_task_activity` returns the task's change log (created,
+>   completed, due date moved, and so on).
+>
+> So if you want either, set up the unofficial login (step 6 below).
+
 ## 📋 Table of Contents
 
 - [Local Installation](#️-local-installation)
@@ -163,7 +175,8 @@ https://<your server's address>/oauth/callback
 If the two don't match character for character, TickTick refuses the sign-in.
 
 **6. Turn on the unofficial tools** (pin and unpin, repeat from completion,
-activity logs, subtasks). TickTick only offers these through its private web
+activity logs, subtasks). Pinning and task history exist only here; the official
+API can't do either. TickTick only offers these through its private web
 login, which the browser sign-in can't reach, so the server logs in with your
 TickTick email and password from step 4.
 - **Check it worked:** open `https://<your server's address>/status`. Under
