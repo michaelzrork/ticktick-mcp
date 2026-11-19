@@ -22,6 +22,7 @@ Requires TICKTICK_USERNAME and TICKTICK_PASSWORD environment variables.
 import functools
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Literal
 
 import anyio
@@ -123,6 +124,32 @@ def _get_task_by_id(client: UnofficialAPIClient, task_id: str) -> dict | None:
         if task.get("id") == task_id:
             return task
     return None
+
+
+def _to_ticktick_time(value: str | None, time_zone: str | None) -> str | None:
+    """A timed value in the user's zone, as the UTC timestamp TickTick stores.
+
+    The private API reads a bare "2026-11-19T08:00:00" as UTC, so 8:00 AM in
+    New York showed as 3:00 AM and its reminder went off then (2026-11-19).
+    A time with no offset is taken as wall-clock time in `time_zone`
+    (daylight saving included) and converted; one with an offset or Z is
+    converted as given. A date with no time ("2026-11-19") is an all-day date
+    and passes through unchanged, which TickTick already handles.
+    """
+    if not value or "T" not in value:
+        return value
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value  # let TickTick say what's wrong with it
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo(time_zone or "America/New_York"))
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+
+
+def _local_midnight_utc(date: str, time_zone: str | None) -> str:
+    """Midnight of `date` in the user's zone, as UTC (repeatFirstDate)."""
+    return _to_ticktick_time(f"{date}T00:00:00", time_zone)
 
 
 def _normalize_repeat_from(value: str | None) -> str | None:
@@ -679,9 +706,9 @@ def unofficial_create_task(
         if content:
             task["content"] = content
         if start_date:
-            task["startDate"] = start_date
+            task["startDate"] = _to_ticktick_time(start_date, time_zone)
         if due_date:
-            task["dueDate"] = due_date
+            task["dueDate"] = _to_ticktick_time(due_date, time_zone)
         if tags:
             task["tags"] = tags
         if desc is not None:
@@ -696,7 +723,7 @@ def unofficial_create_task(
             formatted_dates = sorted([d.replace("-", "") for d in specific_dates])
             task["repeatFlag"] = f"ERULE:NAME=CUSTOM;BYDATE={','.join(formatted_dates)}"
             first_date = min(specific_dates)
-            task["repeatFirstDate"] = f"{first_date}T05:00:00.000+0000"
+            task["repeatFirstDate"] = _local_midnight_utc(first_date, time_zone)
             task["repeatFrom"] = "0"
         elif repeat_flag:
             task["repeatFlag"] = repeat_flag
@@ -866,9 +893,9 @@ def unofficial_update_task(
         if content is not None:
             task["content"] = content
         if start_date is not None:
-            task["startDate"] = start_date
+            task["startDate"] = _to_ticktick_time(start_date, time_zone)
         if due_date is not None:
-            task["dueDate"] = due_date
+            task["dueDate"] = _to_ticktick_time(due_date, time_zone)
         if priority is not None:
             task["priority"] = priority
         if tags is not None:
@@ -899,7 +926,7 @@ def unofficial_update_task(
             formatted_dates = sorted([d.replace("-", "") for d in specific_dates])
             task["repeatFlag"] = f"ERULE:NAME=CUSTOM;BYDATE={','.join(formatted_dates)}"
             first_date = min(specific_dates)
-            task["repeatFirstDate"] = f"{first_date}T05:00:00.000+0000"
+            task["repeatFirstDate"] = _local_midnight_utc(first_date, time_zone)
             task["repeatFrom"] = "0"
         else:
             # Handle repeat_flag update
