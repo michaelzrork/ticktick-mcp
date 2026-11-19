@@ -58,6 +58,11 @@ def state_path() -> Path:
     if override:
         return Path(override).expanduser()
 
+    # On Railway the volume is DATA_DIR (/data): kept across redeploys, which is
+    # what stops a fresh login on every deploy.
+    if os.getenv("DATA_DIR"):
+        return Path(os.environ["DATA_DIR"]) / DEFAULT_STATE_FILENAME
+
     from .config import dotenv_dir_path
 
     return Path(dotenv_dir_path) / DEFAULT_STATE_FILENAME
@@ -192,6 +197,39 @@ class LoginRejected(RuntimeError):
     own should still recover without a redeploy.
     """
 
+
+class ClientTooOld(RuntimeError):
+    """
+    TickTick answered the login with need_upgrade_client.
+
+    The login is refused because of the CLIENT VERSION in the x-device header,
+    before the username and password are looked at. Seen from 2026-11: version
+    6260 (what this code sent since it was copied from ticktick-py) gets
+    need_upgrade_client; 8000 and 8240 get past it. Retrying cannot help; raising
+    TICKTICK_DEVICE_VERSION can.
+    """
+
+
+class LoginNeedsTwoFactor(RuntimeError):
+    """The password was accepted but TickTick wants a second factor (authId, no token)."""
+
+
+# The x-device "version": the TickTick web client's build number. TickTick
+# refuses logins from builds it considers too old (need_upgrade_client).
+# 8240 matches the web client as of 2026-11; TICKTICK_DEVICE_VERSION overrides it.
+DEFAULT_DEVICE_VERSION = 8240
+
+
+def device_version() -> int:
+    raw = (os.getenv("TICKTICK_DEVICE_VERSION") or "").strip()
+    try:
+        return int(raw) if raw else DEFAULT_DEVICE_VERSION
+    except ValueError:
+        logger.warning(f"TICKTICK_DEVICE_VERSION is not a number; using {DEFAULT_DEVICE_VERSION}")
+        return DEFAULT_DEVICE_VERSION
+
+
+NEED_UPGRADE_CLIENT = "need_upgrade_client"
 
 # Error codes in TickTick's login response that mean "these credentials are
 # wrong", as opposed to "try again later".
@@ -332,7 +370,7 @@ class UnofficialAPIClient:
                 "os": "macOS 10.15.7",
                 "device": "Chrome 135.0.0.0",
                 "name": "",
-                "version": 6260,
+                "version": device_version(),
                 "id": device_id or self._device_id,
                 "channel": "website",
                 "campaign": "",
@@ -369,7 +407,9 @@ class UnofficialAPIClient:
             if self._client is not None:
                 return True
 
-            if not self.credentials_configured():
+            # A supplied session token is enough on its own: an account made
+            # with Google/Apple sign-in may have no TickTick password at all.
+            if not self.credentials_configured() and not os.getenv("TICKTICK_SESSION_TOKEN"):
                 self._last_error = (
                     "TICKTICK_USERNAME and TICKTICK_PASSWORD are not set"
                 )
@@ -382,6 +422,17 @@ class UnofficialAPIClient:
                 self._initialize_client(allow_login=allow_login)
             except _LoginDeferred:
                 # No cached session and we were told not to log in. Not an error.
+                return False
+            except (ClientTooOld, LoginNeedsTwoFactor) as e:
+                # Neither clears by retrying: wait the long cooldown, and say
+                # exactly what would fix it.
+                self._client = None
+                self._credentials_rejected = False
+                self._last_error = str(e)
+                self._next_retry_at = (
+                    time.monotonic() + self.REJECTED_COOLDOWN_SECONDS
+                )
+                logger.error(f"Unofficial API login refused: {e}")
                 return False
             except LoginRejected as e:
                 self._client = None
@@ -451,6 +502,7 @@ class UnofficialAPIClient:
                     os.getenv("TICKTICK_SESSION_TOKEN")
                 ),
                 "device_id": self._device_id,
+                "device_version": device_version(),
                 "device_id_persisted": self._device_id_persisted,
                 "active_device_id": self._active_device_id,
                 "state_file": str(state_path()),
@@ -614,6 +666,11 @@ class UnofficialAPIClient:
         Any other outcome (success, or a rejection) is about the account, not the
         device, so it stops the ladder immediately.
         """
+        if not self.credentials_configured():
+            raise RuntimeError(
+                "TICKTICK_SESSION_TOKEN was rejected (expired or incomplete) and "
+                "there is no TICKTICK_USERNAME / TICKTICK_PASSWORD to log in with"
+            )
         url = self.BASE_URL + "user/signon"
         params = {"wc": True, "remember": True}
         payload = {"username": USERNAME, "password": PASSWORD}
@@ -653,6 +710,13 @@ class UnofficialAPIClient:
                 continue
 
             body = response.text[:500]
+            if NEED_UPGRADE_CLIENT in body:
+                raise ClientTooOld(
+                    f"TickTick refused the login with need_upgrade_client: it "
+                    f"considers x-device version {device_version()} too old. "
+                    "Set TICKTICK_DEVICE_VERSION to the current TickTick web "
+                    "client build (8240 worked in 2026-11)."
+                )
             if any(code in body for code in TERMINAL_LOGIN_ERROR_CODES):
                 raise LoginRejected(
                     f"TickTick returned {_login_error_code(body)} "
@@ -670,6 +734,12 @@ class UnofficialAPIClient:
         data = response.json()
         self._access_token = data.get("token")
 
+        if not self._access_token and data.get("authId"):
+            raise LoginNeedsTwoFactor(
+                "TickTick accepted the password but asks for two-factor "
+                "verification, which this server cannot answer. Turn off 2FA for "
+                "the account or supply TICKTICK_SESSION_TOKEN."
+            )
         if not self._access_token:
             raise RuntimeError("Login response missing token")
 

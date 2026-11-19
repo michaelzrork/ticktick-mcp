@@ -42,80 +42,37 @@ PASSWORD = os.getenv("TICKTICK_PASSWORD")
 ACCESS_TOKEN = os.getenv("TICKTICK_ACCESS_TOKEN")
 USER_ID = os.getenv("TICKTICK_USER_ID")
 
-# --- Load from .env file if not all vars are set ---
-_REQUIRED_VARS = {
+# --- Load from .env file if something is missing ---
+# Nothing here is fatal any more. The browser sign-in (oauth.py) needs only the
+# client id and secret; the username and password are for the optional
+# unofficial API, and the server runs without them (those tools then say so).
+_WANTED_VARS = {
     "TICKTICK_CLIENT_ID": CLIENT_ID,
     "TICKTICK_CLIENT_SECRET": CLIENT_SECRET,
-    "TICKTICK_REDIRECT_URI": REDIRECT_URI,
     "TICKTICK_USERNAME": USERNAME,
     "TICKTICK_PASSWORD": PASSWORD,
 }
 
-if not all(_REQUIRED_VARS.values()):
-    _missing = [name for name, value in _REQUIRED_VARS.items() if not value]
-    logger.info(
-        f"Missing environment variables ({', '.join(_missing)}); "
-        "loading from .env file..."
-    )
-
-    dotenv_dir_path = Path(args.dotenv_dir).expanduser()
-
-    try:
-        dotenv_dir_path.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Ensured directory exists: {dotenv_dir_path}")
-    except OSError as e:
-        logger.error(f"Error creating directory {dotenv_dir_path}: {e}")
-        sys.exit(1)
-
-    dotenv_path = dotenv_dir_path / ".env"
-
-    if not dotenv_path.is_file():
-        logger.error(
-            f"Missing required environment variables: {', '.join(_missing)}"
-        )
-        logger.error(
-            f"Set them in the environment, or create {dotenv_path} with them. "
-            "(On a hosting platform, set them as service variables.)"
-        )
-        sys.exit(1)
-
-    loaded = load_dotenv(override=True, dotenv_path=dotenv_path)
-    if loaded:
+if not all(_WANTED_VARS.values()):
+    dotenv_path = Path(args.dotenv_dir).expanduser() / ".env"
+    if dotenv_path.is_file() and load_dotenv(override=False, dotenv_path=dotenv_path):
         logger.info(f"Loaded environment from: {dotenv_path}")
-    else:
-        logger.error(f"Failed to load from {dotenv_path}")
-        sys.exit(1)
+        CLIENT_ID = os.getenv("TICKTICK_CLIENT_ID")
+        CLIENT_SECRET = os.getenv("TICKTICK_CLIENT_SECRET")
+        REDIRECT_URI = os.getenv("TICKTICK_REDIRECT_URI")
+        USERNAME = os.getenv("TICKTICK_USERNAME")
+        PASSWORD = os.getenv("TICKTICK_PASSWORD")
+        ACCESS_TOKEN = ACCESS_TOKEN or os.getenv("TICKTICK_ACCESS_TOKEN")
+        USER_ID = USER_ID or os.getenv("TICKTICK_USER_ID")
 
-    # Reload variables after dotenv
-    CLIENT_ID = os.getenv("TICKTICK_CLIENT_ID")
-    CLIENT_SECRET = os.getenv("TICKTICK_CLIENT_SECRET")
-    REDIRECT_URI = os.getenv("TICKTICK_REDIRECT_URI")
-    USERNAME = os.getenv("TICKTICK_USERNAME")
-    PASSWORD = os.getenv("TICKTICK_PASSWORD")
-    if not ACCESS_TOKEN:
-        ACCESS_TOKEN = os.getenv("TICKTICK_ACCESS_TOKEN")
-    if not USER_ID:
-        USER_ID = os.getenv("TICKTICK_USER_ID")
-else:
-    logger.info("Using environment variables provided by hosting platform")
-
-# Final validation
-_still_missing = [
-    name
-    for name, value in {
-        "TICKTICK_CLIENT_ID": CLIENT_ID,
-        "TICKTICK_CLIENT_SECRET": CLIENT_SECRET,
-        "TICKTICK_REDIRECT_URI": REDIRECT_URI,
-        "TICKTICK_USERNAME": USERNAME,
-        "TICKTICK_PASSWORD": PASSWORD,
-    }.items()
-    if not value
-]
-if _still_missing:
-    logger.error(
-        f"Missing required environment variables: {', '.join(_still_missing)}"
-    )
-    sys.exit(1)
+for _name, _value in {
+    "TICKTICK_CLIENT_ID": CLIENT_ID,
+    "TICKTICK_CLIENT_SECRET": CLIENT_SECRET,
+}.items():
+    if not _value:
+        logger.warning(f"{_name} is not set: the TickTick browser sign-in cannot work without it.")
+if not (USERNAME and PASSWORD):
+    logger.info("TICKTICK_USERNAME / TICKTICK_PASSWORD not set: unofficial_* tools are off.")
 
 # --- Set dotenv_dir_path for token cache ---
 # Use /tmp for cloud deployment (writable), otherwise use config dir for local
@@ -145,39 +102,62 @@ else:
 
 
 # --- Official API Client Functions ---
-# These use the separate ticktick_client.py which uses httpx for the official OpenAPI
+# These use the separate ticktick_client.py which uses httpx for the official OpenAPI.
+#
+# Which token: the one saved by the browser sign-in (token store) while it is
+# valid, else TICKTICK_ACCESS_TOKEN. The variable is the fallback that keeps a
+# deployment working before anyone has signed in through /mcp.
+
+_official_client = None
+_official_client_token = None
+
+
+def official_token() -> tuple:
+    """(token, source) for the official API; (None, None) when there is none."""
+    try:
+        from ticktick_mcp.token_store import get_store
+        saved = get_store().ticktick_token()
+    except Exception as e:  # a broken store must not take the env token down with it
+        logger.warning(f"Could not read the token store: {e}")
+        saved = None
+    if saved and saved.get("access_token") and saved.get("expires_at", 0) > time.time():
+        return saved["access_token"], "sign-in"
+    if ACCESS_TOKEN:
+        return ACCESS_TOKEN, "env"
+    if saved and saved.get("access_token"):
+        return saved["access_token"], "sign-in (expired)"
+    return None, None
+
+
+def official_user_id():
+    """TICKTICK_USER_ID, else the user id learned at sign-in (for the Inbox)."""
+    if USER_ID:
+        return USER_ID
+    try:
+        from ticktick_mcp.token_store import get_store
+        return (get_store().owner() or {}).get("user_id")
+    except Exception:
+        return None
+
 
 def get_ticktick_client():
-    """Returns the official API client. Returns None if ACCESS_TOKEN is missing."""
-    if not ACCESS_TOKEN:
+    """Returns the official API client, or None when there is no token at all."""
+    global _official_client, _official_client_token
+    token, _source = official_token()
+    if not token:
         return None
-    from ticktick_mcp.ticktick_client import init_ticktick_client
-    return init_ticktick_client(access_token=ACCESS_TOKEN, user_id=USER_ID)
+    if _official_client is None or token != _official_client_token:
+        from ticktick_mcp.ticktick_client import init_ticktick_client
+        _official_client = init_ticktick_client(access_token=token, user_id=official_user_id())
+        _official_client_token = token
+    return _official_client
 
 
-def save_tokens(access_token: str, refresh_token: str = None, expires_in: int = None):
-    """Called after successful OAuth callback to save tokens."""
-    global ACCESS_TOKEN
-    ACCESS_TOKEN = access_token
-
-    # Save to local cache file
-    token_file = dotenv_dir_path / ".token-cache.json"
-    token_data = {"access_token": access_token}
-    if refresh_token:
-        token_data["refresh_token"] = refresh_token
-    if expires_in:
-        token_data["expires_in"] = str(expires_in)
-        token_data["expire_time"] = str(int(time.time()) + expires_in)
-
-    try:
-        dotenv_dir_path.mkdir(parents=True, exist_ok=True)
-        token_file.write_text(json.dumps(token_data, indent=2))
-        logger.info(f"Saved official token to: {token_file}")
-    except IOError as e:
-        logger.warning(f"Failed to save token cache: {e}")
-
-    from ticktick_mcp.ticktick_client import init_ticktick_client
-    init_ticktick_client(access_token=access_token, user_id=USER_ID)
+def reset_official_client():
+    """Forget the cached client (a new token was just saved)."""
+    global _official_client, _official_client_token
+    _official_client = None
+    _official_client_token = None
 
 
 # --- Unofficial API Client Function ---

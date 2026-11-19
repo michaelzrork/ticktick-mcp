@@ -20,6 +20,13 @@ _PLACEHOLDER_ENV = {
 for _key, _value in _PLACEHOLDER_ENV.items():
     os.environ.setdefault(_key, _value)
 
+# The MCP instance builds its OAuth settings from the public URL at import, and
+# the token store reads DATA_DIR; keep both away from anything real.
+import tempfile as _tempfile
+
+os.environ.setdefault("PUBLIC_URL", "https://tt.example.com")
+os.environ.setdefault("DATA_DIR", _tempfile.mkdtemp(prefix="ticktick-mcp-test-"))
+
 
 def has_live_credentials() -> bool:
     """True when real TickTick credentials are configured, not placeholders."""

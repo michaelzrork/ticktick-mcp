@@ -19,11 +19,14 @@ CHECKLIST ITEMS vs SUBTASKS:
 Requires TICKTICK_USERNAME and TICKTICK_PASSWORD environment variables.
 """
 
+import functools
 import logging
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from ticktick_mcp.mcp_instance import mcp
+import anyio
+
+from ticktick_mcp.mcp_instance import mcp as _mcp
 from ticktick_mcp.unofficial_client import (
     UnofficialAPIClient,
     get_client,
@@ -41,6 +44,51 @@ BATCH_TASK_PROJECT = "/api/v2/batch/taskProject"
 BATCH_TASK_PARENT = "/api/v2/batch/taskParent"
 TASK_ACTIVITY = "/api/v1/task/activity/{task_id}"
 TASK_BY_ID = "/api/v2/task/{task_id}"
+
+
+# ==================== Registration ====================
+
+
+def unavailable_result() -> dict[str, Any]:
+    """What every unofficial_* tool returns while the private API can't be reached."""
+    return {
+        "error": unavailable_reason(),
+        "unofficial_api_unavailable": True,
+        "hint": (
+            "Pin/unpin, repeatFrom, activity logs and subtasks need TickTick's "
+            "private web API, which is not connected. The ticktick_* tools (the "
+            "official API) still work; use them instead where they cover the job."
+        ),
+    }
+
+
+class _UnofficialTools:
+    """Stands in for `mcp` in this module so every tool gets the same guard.
+
+    Each tool is registered through a wrapper that (1) checks the private API is
+    connected before running, returning unavailable_result() instead of letting
+    the tool fail half-way, and (2) runs the synchronous tool in a worker thread:
+    a login or a slow TickTick reply must not stall the server's event loop,
+    which the official tools share.
+    """
+
+    def tool(self, *args, **kwargs):
+        register = _mcp.tool(*args, **kwargs)
+
+        def decorate(fn):
+            @functools.wraps(fn)
+            async def guarded(**arguments):
+                if await anyio.to_thread.run_sync(get_client) is None:
+                    return unavailable_result()
+                return await anyio.to_thread.run_sync(functools.partial(fn, **arguments))
+
+            register(guarded)
+            return fn
+
+        return decorate
+
+
+mcp = _UnofficialTools()
 
 
 # ==================== Helpers ====================

@@ -99,123 +99,119 @@ Configure your MCP client (Claude Desktop, VS Code Agent Mode, etc.):
 
 ## ☁️ Cloud Deployment
 
-Deploy this MCP server to cloud platforms like Railway, Render, or Fly.io for 24/7 availability.
+Deploy to Railway (or any host) for 24/7 availability. The server is an OAuth 2.1
+authorization server for its own MCP endpoint: **connecting the connector in
+Claude opens TickTick's sign-in page in your browser**, and only the owner's
+TickTick account is let in.
+
+### Sign-in: how connecting works
+
+1. In Claude: Settings → Connectors → **Add custom connector**, URL
+   `https://<your-deployment>/mcp`.
+2. Claude registers itself and sends you to `/authorize`, which forwards you to
+   TickTick's own login (`https://ticktick.com/oauth/authorize`, scopes
+   `tasks:read tasks:write`).
+3. TickTick sends you back to `https://<your-deployment>/oauth/callback`. The
+   server trades the code for a TickTick token, **checks the account is the
+   owner's**, saves the token in its store (`DATA_DIR`), and hands Claude its own
+   access token (1 hour) and refresh token (90 days, rotated on use).
+
+**Who counts as the owner.** TickTick's official API has no user id (its
+`/user/info` returns only a name and an avatar), so the account is recognized by
+what can be read: the numeric id from Inbox tasks (`inbox<userId>`) when the
+Inbox has any, compared with `TICKTICK_USER_ID`; otherwise the display name plus
+at least half of the owner's project ids. The reference is the account behind
+`TICKTICK_ACCESS_TOKEN` until the first sign-in, then the last accepted sign-in.
+With neither, the first sign-in is accepted and locked in. Anyone else gets
+"This server belongs to someone else" and nothing is saved.
+
+**Token precedence.** The token from the browser sign-in is used while it is
+valid; `TICKTICK_ACCESS_TOKEN` is the fallback. TickTick tokens last about 180
+days and can't be refreshed. When the saved one runs out, Claude's next refresh
+is refused, so it signs in again. `/oauth/start` renews the token by hand: same
+sign-in and same owner check, and the token is saved, never shown.
+
+**Register the redirect URI.** In the [TickTick developer portal](https://developer.ticktick.com) →
+**Manage Apps** → your app → **OAuth redirect URL**, enter exactly
+`https://<your-deployment>/oauth/callback`. `/health` shows the exact value the
+server sends (`ticktick_redirect_uri`).
+
+**The old `/sse` endpoint** has no sign-in at all: anyone with the URL can use it.
+It stays on only until an AI app first connects through `/mcp`, then it closes
+for good (410). `LEGACY_SSE=on|off` overrides that.
 
 ### Environment Variables
 
-Configure these in your cloud platform:
-
 ```bash
-# Required: OAuth credentials
+# Required: the TickTick app (developer portal)
 TICKTICK_CLIENT_ID=your_client_id
 TICKTICK_CLIENT_SECRET=your_client_secret
-TICKTICK_REDIRECT_URI=https://<your-deployment-url>/oauth/callback
 
-# Required: Access token (get via /oauth/start after first deploy)
-TICKTICK_ACCESS_TOKEN=your_access_token
+# Required for the cloud server
+MCP_TRANSPORT=http            # "sse" is accepted as the old name
+DATA_DIR=/data                # a mounted volume: sign-in store, TickTick token, unofficial session
 
-# Required for Inbox access
-TICKTICK_USER_ID=your_user_id
+# Optional
+PUBLIC_URL=https://<your-deployment>   # defaults to https://$RAILWAY_PUBLIC_DOMAIN
+TICKTICK_ACCESS_TOKEN=...              # fallback token until the browser sign-in has run
+TICKTICK_USER_ID=115085635             # Inbox access, and the strongest owner check
+TICKTICK_REDIRECT_URI=...              # used only if it already points at <public url>/oauth/callback
+LEGACY_SSE=on|off
 
-# Optional: For unofficial API features (pins, repeatFrom, activity logs)
+# Optional: unofficial API (pin, repeatFrom, activity logs, subtasks)
 TICKTICK_USERNAME=your_ticktick_email
 TICKTICK_PASSWORD=your_ticktick_password
-
-# Required: Enable SSE transport for cloud
-MCP_TRANSPORT=sse
-
-# Optional: where the unofficial API's device id and session token are kept.
-# Defaults to the token-cache dir (/tmp on a cloud deploy, which survives
-# container restarts but not redeploys). Point it at a mounted volume so both
-# survive redeploys - see "Login rate limits" below.
-TICKTICK_SESSION_CACHE=/data/.ticktick-session.json
-
-# Optional: pin the device id instead of letting it be generated and persisted.
-TICKTICK_DEVICE_ID=<24 lowercase hex chars>
-
-# Optional: authenticate on first tool use instead of at startup.
-TICKTICK_DEFER_LOGIN=1
-
-# Optional: use a session token directly and skip the login endpoint entirely.
 TICKTICK_SESSION_TOKEN=<the "t" cookie from a signed-in ticktick.com session>
+TICKTICK_DEVICE_VERSION=8240           # web client build sent in x-device (see below)
+TICKTICK_DEVICE_ID=<24 lowercase hex chars>
+TICKTICK_DEFER_LOGIN=1                 # authenticate on first use, not at startup
 ```
 
-### Using a session token instead of a password
+### The unofficial API (pin, repeatFrom, activity)
 
-The v2 API only ever wants a session cookie; the username/password login is just
-one way to obtain one. When that endpoint refuses to issue a token - it is
-throttled, or it answers `username_password_not_match` for every request
-including ones for accounts that do not exist - you can supply a token directly
-and skip it:
+These tools use TickTick's private web API, which wants a session cookie (`t`).
+There is no OAuth for it, and the browser sign-in above can't capture that cookie:
+it belongs to ticktick.com, and no other site can read it. So it is obtained one
+of two ways:
 
-1. Sign in to `https://ticktick.com` in your own browser.
-2. DevTools → Application → Cookies → `https://ticktick.com` → copy the value of
-   the cookie named **`t`**.
-3. Set it as `TICKTICK_SESSION_TOKEN` on your deployment.
+* **Username and password** (`TICKTICK_USERNAME` / `TICKTICK_PASSWORD`). The
+  login asks for `remember=true`, and the session is cached in `DATA_DIR`, so
+  a redeploy doesn't log in again.
+* **A session token** (`TICKTICK_SESSION_TOKEN`). Sign in at ticktick.com, then
+  DevTools → Application → Cookies → `https://ticktick.com` → copy `t`. Use this
+  for an account made with Google/Apple sign-in that has no TickTick password,
+  or one with two-factor authentication, which the password login can't answer.
 
-The token takes precedence over the cached session, and no login call is made
-while it works. If it expires or was copied incompletely, the server logs that
-clearly and falls back to a normal login. `/status` reports
-`session_source: "env"` when the supplied token is in use, and never contains the
-token itself.
+**`need_upgrade_client` (2026-11).** TickTick refuses logins from web-client
+builds it considers too old, before it looks at the password: HTTP 500
+`{"errorCode":"need_upgrade_client"}`. This code sent build `6260` and now sends
+`8240` (the n8n TickTick node made the same fix). If the error comes back, raise
+`TICKTICK_DEVICE_VERSION`.
 
-Treat the token like a password: it grants full account access until it expires.
+When the unofficial API is unavailable, every `unofficial_*` tool returns
+`{"error": <the real reason>, "unofficial_api_unavailable": true, "hint": ...}`
+instead of failing, and the official `ticktick_*` tools keep working. `/status`
+shows the details (never the token): `last_error`, `last_login_diagnostics`,
+`retry_in_seconds`, `device_version`.
 
-### Login rate limits (429) and device identity
+**Rate limits and device identity.** The login endpoint throttles hard (429).
+Each install sends its own device id (generated once and persisted, or pinned
+with `TICKTICK_DEVICE_ID`), so it doesn't share a rate-limit bucket with every
+other copy of this code. Failures back off from 30s up to 15 min (or whatever
+`Retry-After` asks for). A refusal that retrying can't fix (`need_upgrade_client`,
+2FA, `username_password_not_match`) waits an hour.
 
-The unofficial API authenticates with username/password against TickTick's login
-endpoint, which is throttled aggressively. Two things keep that from breaking the
-`unofficial_*` tools:
+### Endpoints
 
-**Each install gets its own device id.** TickTick sees an `x-device` header
-carrying a device id. That id used to be a constant copied from ticktick-py, so
-every deployment running this code presented the *same device* to TickTick and
-shared a rate-limit bucket with every other copy. It is now generated once per
-install (24 hex chars, matching TickTick's format), persisted, and reused. Set
-`TICKTICK_DEVICE_ID` to pin it explicitly.
-
-**The session is cached, so restarts rarely log in.** Login asks for
-`remember=true`, so the session is long-lived. The server authenticates at
-startup, but resumes the cached session when one exists and only logs in when
-there isn't one - so a normal deploy costs no login. This matters because a
-handful of redeploys during one debugging session used to be enough to earn a
-`429`, after which every `unofficial_*` tool failed while the official
-`ticktick_*` tools kept working (they use an OAuth bearer token and never touch a
-login endpoint).
-
-Startup connecting eagerly means a deploy either works or says why in its own
-logs, instead of the first tool call being the one to find out. It is never
-fatal - a failure is retried with backoff and the official tools are unaffected.
-Set `TICKTICK_DEFER_LOGIN=1` to authenticate on first use instead, which is worth
-doing while the login endpoint is actively rate-limiting you.
-
-If you do get throttled, the client backs off (30s up to 15min, or whatever
-`Retry-After` asks for) and reconnects on its own - no redeploy needed. `/status`
-shows exactly where it is:
-
-```json
-"unofficial_api": {
-  "credentials_configured": true, "connected": false,
-  "session_source": null, "device_id": "87a81d490211bebab74ea907",
-  "last_error": "Login failed: 429 - ", "retry_in_seconds": 71
-}
-```
-
-### Getting Your Access Token
-
-1. Deploy with all variables EXCEPT `TICKTICK_ACCESS_TOKEN`
-2. Visit `https://<your-deployment-url>/oauth/start`
-3. Authorize the application
-4. Copy the `access_token` from the JSON response
-5. Add `TICKTICK_ACCESS_TOKEN` to your environment variables
-6. Redeploy
-
-### Connect from MCP Clients
-
-**From claude.ai:**
-1. Go to Settings → Connectors
-2. Click "Add custom connector"
-3. Enter URL: `https://<your-deployment-url>/sse`
+| Path | What |
+|------|------|
+| `/mcp` | The connector URL (Streamable HTTP, sign-in required) |
+| `/authorize`, `/token`, `/register`, `/revoke`, `/.well-known/*` | OAuth, from the MCP SDK |
+| `/oauth/callback` | TickTick's redirect back |
+| `/oauth/start` | Renew the server's TickTick token in the browser |
+| `/health`, `/status` | State, never secrets |
+| `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png`, `/icon.png` | The connector icon (also in MCP `serverInfo.icons`) |
+| `/sse` | Old unauthenticated endpoint, closes itself once `/mcp` is used |
 
 ## 🔧 Tools Reference
 
@@ -248,7 +244,7 @@ shows exactly where it is:
 
 ### Unofficial API Tools
 
-These require `TICKTICK_USERNAME` and `TICKTICK_PASSWORD` to be set:
+These need `TICKTICK_USERNAME` and `TICKTICK_PASSWORD`, or `TICKTICK_SESSION_TOKEN` (see "The unofficial API" above):
 
 | Tool | Description |
 |------|-------------|
