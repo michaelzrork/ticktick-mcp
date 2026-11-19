@@ -24,6 +24,8 @@ This server provides comprehensive access to TickTick functionalities via MCP to
 
 - [Local Installation](#️-local-installation)
 - [Cloud Deployment](#️-cloud-deployment)
+  - [Set up your own server, step by step](#set-up-your-own-server-step-by-step)
+  - [Connect it to Claude, ChatGPT or another AI app](#connect-it-to-claude-chatgpt-or-another-ai-app)
 - [Tools Reference](#-tools-reference)
 - [Sample Agent Prompt](#-sample-agent-prompt)
 - [Contributing](#-contributing)
@@ -70,11 +72,10 @@ This server provides comprehensive access to TickTick functionalities via MCP to
 
 3. **Get Your Access Token:**
 
-   You can obtain an access token through the OAuth flow:
-   * Deploy the server locally or to cloud
-   * Visit `/oauth/start` endpoint
-   * Authorize the application
-   * Copy the `access_token` from the response
+   The easiest way is the cloud server below: connecting it in your AI app signs
+   you in to TickTick in the browser and saves the token on the server. Visiting
+   `/oauth/start` on a running server does the same sign-in by hand. The token is
+   saved in `DATA_DIR` and used from then on; it is never shown on screen.
 
 ### Running the Server
 
@@ -103,6 +104,128 @@ Deploy to Railway (or any host) for 24/7 availability. The server is an OAuth 2.
 authorization server for its own MCP endpoint: **connecting the connector in
 Claude opens TickTick's sign-in page in your browser**, and only the owner's
 TickTick account is let in.
+
+### Set up your own server, step by step
+
+This server is for one person: you. Each person who wants it runs their own copy
+with their own TickTick account. It takes about 20 minutes.
+
+**1. Copy the code.** Fork this repository on GitHub (the **Fork** button,
+top right), so you have your own copy for Railway to deploy.
+
+**2. Make a TickTick app.** This is what lets your server ask TickTick for
+access to your tasks.
+1. Go to the [TickTick Developer Portal](https://developer.ticktick.com) and sign in.
+2. Click **Manage Apps** (top right), then **+App Name**, and give it any name.
+3. Copy the **Client ID** and **Client Secret**. You'll paste them into Railway in step 4.
+4. Leave the **OAuth redirect URL** for now. You'll fill it in at step 5, once
+   your server has an address.
+
+**3. Create the server on Railway.**
+1. At [Railway](https://railway.app), choose **New Project → Deploy from GitHub repo**
+   and pick your fork.
+2. Open the new service, go to **Settings**:
+   - **Deploy → Custom Start Command:** `uv run ticktick-mcp`
+   - **Networking → Generate Domain.** You get an address like
+     `https://your-name.up.railway.app`. This is **your server's address**;
+     everything below uses it.
+3. Add a **volume**. Right-click the service (or use the command palette) → **Add
+   Volume**, mount path `/data`. This is where the server keeps your sign-in, so a
+   redeploy doesn't log you out.
+
+**4. Set the variables.** In the service's **Variables** tab, add:
+
+| Variable | Value |
+|---|---|
+| `TICKTICK_CLIENT_ID` | the Client ID from step 2 |
+| `TICKTICK_CLIENT_SECRET` | the Client Secret from step 2 |
+| `MCP_TRANSPORT` | `http` |
+| `DATA_DIR` | `/data` |
+| `TICKTICK_USERNAME` | your TickTick email (for the unofficial tools, see step 6) |
+| `TICKTICK_PASSWORD` | your TickTick password (same) |
+
+`TICKTICK_USER_ID` is optional but recommended: it turns on Inbox access and is
+the strongest check that only your account can sign in. Find it after setup:
+the Inbox's project id is `inbox<your id>` (for example, `inbox115085635` means
+`115085635`).
+
+Railway redeploys after you save. Open `https://<your server's address>/health`:
+it should say `"status": "ok"`.
+
+**5. Tell TickTick your server's address.** Back in the TickTick Developer Portal
+→ **Manage Apps** → your app, set **OAuth redirect URL** to exactly:
+
+```
+https://<your server's address>/oauth/callback
+```
+
+`/health` shows the exact value the server expects, as `ticktick_redirect_uri`.
+If the two don't match character for character, TickTick refuses the sign-in.
+
+**6. Turn on the unofficial tools** (pin and unpin, repeat from completion,
+activity logs, subtasks). TickTick only offers these through its private web
+login, which the browser sign-in can't reach, so the server logs in with your
+TickTick email and password from step 4.
+- **Check it worked:** open `https://<your server's address>/status`. Under
+  `unofficial_api` it should show `"connected": true`. If not, `last_error`
+  says why (it never shows your password).
+- **If you sign in to TickTick with Google or Apple** (no TickTick password), or
+  you use two-factor authentication, use a session token instead of the password:
+  sign in at ticktick.com in a desktop browser, open DevTools → **Application** →
+  **Cookies** → `https://ticktick.com`, copy the value of the cookie named `t`,
+  and save it as `TICKTICK_SESSION_TOKEN` (you can then leave out
+  `TICKTICK_USERNAME` and `TICKTICK_PASSWORD`). The token lasts until you sign
+  out of ticktick.com in that browser; if the tools stop working, copy a new one.
+- **If `/status` says `need_upgrade_client`**, TickTick raised the minimum web
+  app version it accepts. Add `TICKTICK_DEVICE_VERSION` with a higher number than
+  the one `/status` shows (for example `8500`).
+- Your password lives only in Railway's variables, and it gives full access to
+  your TickTick account. Keep your Railway account behind two-factor
+  authentication, and don't share the project.
+
+If you skip this step, everything else still works; the `unofficial_*` tools
+just answer that they're unavailable.
+
+### Connect it to Claude, ChatGPT or another AI app
+
+Your connector URL is your server's address plus `/mcp`:
+
+```
+https://<your server's address>/mcp
+```
+
+In every app, adding it opens TickTick's sign-in in your browser. Sign in with
+**your** account and click Allow. Only the account the server was set up for is
+let in.
+
+**Claude (claude.ai, the desktop app, and the mobile apps)**
+1. Settings → **Connectors** → **Add custom connector**.
+2. Name it (for example, TickTick), paste the connector URL, and click **Add**.
+3. Click **Connect** and sign in to TickTick. Connectors added on the web show
+   up in the desktop and mobile apps too.
+
+**ChatGPT** (custom connectors need a plan that allows them, and Developer mode)
+1. Settings → **Apps & Connectors** → **Advanced settings** → turn on
+   **Developer mode**.
+2. Back in **Apps & Connectors**, click **Create**, paste the connector URL,
+   choose **OAuth** for authentication, and save.
+3. Sign in to TickTick when it asks.
+
+**Claude Code**
+
+```bash
+claude mcp add --transport http ticktick https://<your server's address>/mcp
+```
+
+Then run `/mcp` inside Claude Code and choose the TickTick server to sign in.
+
+**Other apps** that support remote MCP servers (Streamable HTTP with OAuth): give
+them the same connector URL. Apps that only support the old SSE transport can't
+use this server once `/mcp` has been connected, because `/sse` closes itself for
+safety (below).
+
+**Check it's working:** ask your AI app to list your TickTick projects. Then ask
+it to pin a task and unpin it; if that works, the unofficial tools are on too.
 
 ### Sign-in: how connecting works
 
