@@ -260,6 +260,10 @@ async def ticktick_create_task(
     """
     Create a new task.
 
+    TIMES: send local wall-clock time with no offset ("2026-11-19T08:00:00" = 8:00 AM)
+    and pass time_zone (defaults to America/New_York). The server adds the offset.
+    NEVER convert to UTC yourself. TickTick returns times in UTC (+0000).
+
     IMPORTANT: To set a due date/time for a task, you must set both start_date and
     due_date to the same value. If you only set due_date without start_date, TickTick
     will create a ranged/duration task, which is usually not the intended behavior.
@@ -340,6 +344,10 @@ async def ticktick_create_task_with_checklist(
     Checklist items are simple checkbox items embedded within a single task.
     For true hierarchical subtasks (separate tasks with parent/child relationship),
     use unofficial_make_subtask instead.
+
+    TIMES: send local wall-clock time with no offset ("2026-11-19T08:00:00" = 8:00 AM)
+    and pass time_zone (defaults to America/New_York). The server adds the offset.
+    NEVER convert to UTC yourself. TickTick returns times in UTC (+0000).
 
     IMPORTANT: To set a due date/time for a task, you must set both start_date and
     due_date to the same value. If you only set due_date without start_date, TickTick
@@ -792,6 +800,10 @@ async def ticktick_update_task(
 
     Note: Both task_id and project_id are required for updates.
     To update checklist items, use ticktick_update_checklist_item.
+
+    TIMES: send local wall-clock time with no offset ("2026-11-19T08:00:00" = 8:00 AM)
+    and pass time_zone (defaults to America/New_York). The server adds the offset.
+    NEVER convert to UTC yourself. TickTick returns times in UTC (+0000).
 
     IMPORTANT: When setting a due date, you must set both start_date and due_date
     to the same value. If you only set due_date without start_date, TickTick will
