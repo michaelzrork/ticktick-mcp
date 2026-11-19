@@ -1015,8 +1015,8 @@ async def ticktick_filter_tasks(
 async def ticktick_experimental_api_call(
     endpoint: str,
     method: str = "GET",
-    data: str | None = None,
-    params: str | None = None
+    data: dict | list | str | None = None,
+    params: dict | str | None = None
 ) -> dict[str, Any] | list:
     """
     Make a raw API call to TickTick's official OpenAPI for experimentation.
@@ -1030,8 +1030,8 @@ async def ticktick_experimental_api_call(
     Args:
         endpoint: API path relative to base URL (e.g., "/project", "/task/{taskId}")
         method: HTTP method - GET, POST, PUT, or DELETE
-        data: JSON string for the request body (POST/PUT). Must be valid JSON or null.
-        params: JSON string for query parameters. Must be valid JSON object or null.
+        data: Request body (POST/PUT): a JSON object or array, or the same as a JSON string.
+        params: Query parameters: a JSON object, or the same as a JSON string.
 
     Returns:
         Raw API response or error dict
@@ -1047,8 +1047,11 @@ async def ticktick_experimental_api_call(
         }
 
     try:
-        parsed_data = json.loads(data) if data else None
-        parsed_params = json.loads(params) if params else None
+        # MCP clients send a JSON-looking argument as an object, not a string, so
+        # a str-only signature rejected every request body before it got here
+        # (2026-11-19). Accept both: objects as they are, strings parsed.
+        parsed_data = json.loads(data) if isinstance(data, str) and data.strip() else (data or None)
+        parsed_params = json.loads(params) if isinstance(params, str) and params.strip() else (params or None)
 
         result = await client._request(method, endpoint, json=parsed_data, params=parsed_params)
         logger.info(f"ticktick_experimental_api_call succeeded: {method} {endpoint}")
